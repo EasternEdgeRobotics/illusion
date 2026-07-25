@@ -92,8 +92,13 @@ class DB_Commands:
         sku = illusion_helpers.clean_sku(sku)
         if inventory.validate_sku(sku):
             item = inventory.get_item(sku)
-            response_message = illusion_helpers.make_table(item, ["PRIORITY", "TRACKING_MODE", "LOW_THRESHOLD", "UNIT", "LOW_THREAD_ID", "DECREASE_AMOUNT", 
-                                                       "VENDOR_1", "LINK_1", "VENDOR_2", "LINK_2", "VENDOR_3", "LINK_3", "VENDOR_4", "LINK_4", "VENDOR_5", "LINK_5"])
+            exclude = ["PRIORITY", "TRACKING_MODE", "LOW_THRESHOLD", "UNIT", "LOW_THREAD_ID", "DECREASE_AMOUNT", 
+                        "VENDOR_1", "LINK_1", "VENDOR_2", "LINK_2", "VENDOR_3", "LINK_3", "VENDOR_4", "LINK_4", "VENDOR_5", "LINK_5"]
+
+            if item["TRACKING_MODE"] == "KANBAN":
+                exclude.append("QUANTITY_ON_HAND")
+            
+            response_message = illusion_helpers.make_table(item, exclude)
         else:
             response_message = f"Invalid sku: {sku}"
         
@@ -315,7 +320,7 @@ class DB_Commands:
         if updates["DIGIKEY_PART_NUMBER"] != None:
             digikey_link = f"https://www.digikey.ca/en/products/result?keywords={updates['DIGIKEY_PART_NUMBER']}"
             inventory.add_vendor(sku, "Digikey", digikey_link)
-            
+
         cleaned = {}
         
         for key, value in updates.items():
