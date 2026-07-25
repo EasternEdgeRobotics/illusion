@@ -92,8 +92,13 @@ class DB_Commands:
         sku = illusion_helpers.clean_sku(sku)
         if inventory.validate_sku(sku):
             item = inventory.get_item(sku)
-            response_message = illusion_helpers.make_table(item, ["PRIORITY", "TRACKING_MODE", "LOW_THRESHOLD", "UNIT", "LOW_THREAD_ID", "DECREASE_AMOUNT", 
-                                                       "VENDOR_1", "LINK_1", "VENDOR_2", "LINK_2", "VENDOR_3", "LINK_3", "VENDOR_4", "LINK_4", "VENDOR_5", "LINK_5"])
+            exclude = ["PRIORITY", "TRACKING_MODE", "LOW_THRESHOLD", "UNIT", "LOW_THREAD_ID", "DECREASE_AMOUNT", 
+                        "VENDOR_1", "LINK_1", "VENDOR_2", "LINK_2", "VENDOR_3", "LINK_3", "VENDOR_4", "LINK_4", "VENDOR_5", "LINK_5"]
+
+            if item["TRACKING_MODE"] == "KANBAN":
+                exclude.append("QUANTITY_ON_HAND")
+            
+            response_message = illusion_helpers.make_table(item, exclude)
         else:
             response_message = f"Invalid sku: {sku}"
         
@@ -311,6 +316,11 @@ class DB_Commands:
         if not inventory.validate_sku(sku):
             return f"Invalid sku: {sku}"
         
+        # Automatically adds a digikey link if a digikey link was added
+        if updates["DIGIKEY_PART_NUMBER"] != None:
+            digikey_link = f"https://www.digikey.ca/en/products/result?keywords={updates['DIGIKEY_PART_NUMBER']}"
+            inventory.add_vendor(sku, "Digikey", digikey_link)
+
         cleaned = {}
         
         for key, value in updates.items():
@@ -806,6 +816,7 @@ async def printer_info(interaction: discord.Interaction):
 @app_commands.describe(sku="Item SKU", item_name="Item Name", priority="Item Priority",
                        order_quantity="Number of units to order when stock low", unit="Unit name",
                        quantity="Number of units on hand", low_threshold="Minimum Stock", decrease_amount="Amount to decrease by",
+                       digikey_part_number="Digikey Part Number",
                        vendor_1="Source 1 for Item", link_1="Source 1 Purchase Link",
                        vendor_2="Source 2 for Item", link_2="Source 2 Purchase Link",
                        vendor_3="Source 3 for Item", link_3="Source 3 Purchase Link",
@@ -815,7 +826,7 @@ async def printer_info(interaction: discord.Interaction):
 
 async def update_item(interaction: discord.Interaction, sku: str, 
                       item_name: str | None = None, priority: str | None = None, quantity: str | None = None, order_quantity: str | None = None, 
-                      low_threshold: str | None = None, unit: str | None = None, decrease_amount: str | None = None,
+                      low_threshold: str | None = None, unit: str | None = None, decrease_amount: str | None = None, digikey_part_number: str | None = None,
                       vendor_1: str | None = None, link_1: str | None = None, vendor_2: str | None = None, link_2: str | None = None, 
                       vendor_3: str | None = None, link_3: str | None = None, vendor_4: str | None = None, 
                       link_4: str | None = None, vendor_5: str | None = None, link_5: str | None = None):
@@ -840,7 +851,8 @@ async def update_item(interaction: discord.Interaction, sku: str,
             "VENDOR_4": vendor_4,
             "LINK_5": link_5,
             "VENDOR_5": vendor_5,
-            "LOW": None
+            "LOW": None,
+            "DIGIKEY_PART_NUMBER": digikey_part_number
         }
             
     response_message = await command_handler.handler_update_item(sku, updates)
