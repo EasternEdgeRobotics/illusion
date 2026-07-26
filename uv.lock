@@ -260,7 +260,7 @@ wheels = [
 
 [[package]]
 name = "illusion"
-version = "1.0.1"
+version = "1.0.2"
 source = { virtual = "." }
 dependencies = [
     { name = "click" },
@@ -330,8 +330,8 @@ wheels = [
 
 [[package]]
 name = "niimprint"
-version = "0.1.0"
-source = { git = "https://github.com/Peyton-C/niimprint#ab403d301f868d6eaab6e19c0f8604f1e1c8667d" }
+version = "0.1.1"
+source = { git = "https://github.com/Peyton-C/niimprint#101afaa1859ce008ce2211435a6210cdbf6da4b9" }
 dependencies = [
     { name = "click" },
     { name = "pillow" },
