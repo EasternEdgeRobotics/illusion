@@ -655,7 +655,7 @@ async def delete(interaction: discord.Interaction, sku: str):
 
 @bot.tree.command(name="add_item", description="Add item to inventory w/ per unit tracking")
 @app_commands.describe(item_name="Item Name",
-                       priority="Item Priority",
+                       priority="Item Priority, 1-10",
                        order_quantity="Number of units to order when stock low", unit="Unit name",
                        quantity="Number of units on hand", low_threshold="Minimum Stock",
                        vendor_1="Source 1 for Item", link_1="Source 1 Purchase Link",
@@ -665,8 +665,8 @@ async def delete(interaction: discord.Interaction, sku: str):
                        vendor_5="Source 5 for Item", link_5="Source 5 Purchase Link",
                        )
 
-async def add_item(interaction: discord.Interaction, item_name: str, priority: str, 
-                   quantity: str, order_quantity: str, low_threshold: str, unit: str,
+async def add_item(interaction: discord.Interaction, item_name: str, priority: int, 
+                   quantity: float, order_quantity: float, low_threshold: float, unit: str,
                    vendor_1: str, link_1: str, vendor_2: str | None = None, link_2: str | None = None, 
                    vendor_3: str | None = None, link_3: str | None = None, vendor_4: str | None = None, 
                    link_4: str | None = None, vendor_5: str | None = None, link_5: str | None = None):
@@ -678,7 +678,7 @@ async def add_item(interaction: discord.Interaction, item_name: str, priority: s
 
 @bot.tree.command(name="add_kanban", description="Add item to inventory w/ kanban tracking")
 @app_commands.describe(item_name="Item Name",
-                       priority="Item Priority",
+                       priority="Item Priority, 1-10",
                        order_quantity="Number of units to order when stock low",
                        vendor_1="Source 1 for Item", link_1="Source 1 Purchase Link",
                        vendor_2="Source 2 for Item", link_2="Source 2 Purchase Link",
@@ -687,7 +687,7 @@ async def add_item(interaction: discord.Interaction, item_name: str, priority: s
                        vendor_5="Source 5 for Item", link_5="Source 5 Purchase Link",
                        )
 
-async def add_kanban(interaction: discord.Interaction, item_name: str, priority: str, order_quantity: str,
+async def add_kanban(interaction: discord.Interaction, item_name: str, priority: int, order_quantity: float,
                    vendor_1: str, link_1: str, vendor_2: str | None = None, link_2: str | None = None, 
                    vendor_3: str | None = None, link_3: str | None = None, vendor_4: str | None = None, 
                    link_4: str | None = None, vendor_5: str | None = None, link_5: str | None = None):
@@ -699,7 +699,7 @@ async def add_kanban(interaction: discord.Interaction, item_name: str, priority:
 
 @bot.tree.command(name="add_hybrid", description="Add item to inventory w/ hybrid tracking")
 @app_commands.describe(item_name="Item Name",
-                       priority="Item Priority",
+                       priority="Item Priorit, 1-10",
                        order_quantity="Number of units to order when stock low", unit="Unit name",
                        quantity="Number of units on hand", low_threshold="Minimum Stock", decrease_amount="Amount to decrease by",
                        vendor_1="Source 1 for Item", link_1="Source 1 Purchase Link",
@@ -709,8 +709,8 @@ async def add_kanban(interaction: discord.Interaction, item_name: str, priority:
                        vendor_5="Source 5 for Item", link_5="Source 5 Purchase Link",
                        )
 
-async def add_hybrid(interaction: discord.Interaction, item_name: str, priority: str, 
-                   quantity: str, order_quantity: str, low_threshold: str, unit: str, decrease_amount: str,
+async def add_hybrid(interaction: discord.Interaction, item_name: str, priority: int, 
+                   quantity: float, order_quantity: float, low_threshold: float, unit: str, decrease_amount: float,
                    vendor_1: str, link_1: str, vendor_2: str | None = None, link_2: str | None = None, 
                    vendor_3: str | None = None, link_3: str | None = None, vendor_4: str | None = None, 
                    link_4: str | None = None, vendor_5: str | None = None, link_5: str | None = None):
