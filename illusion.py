@@ -8,8 +8,10 @@ import tomllib
 from pathlib import Path
 import barcode_generator, illusion_helpers
 from PIL import Image
-import os, io
+import os, io, platform
 from digikey_client import DigiKeyClient
+import time
+from datetime import timedelta
 
 try:
     import readline
@@ -25,6 +27,8 @@ illusion_version = pyproject["project"]["version"]
 intents = discord.Intents.default()
 
 bot = commands.Bot(command_prefix="!", intents=intents)
+
+boot_time = round(time.time() * 1000)
 
 # Had to include at least 1 other reference
 joanne_hat = r"""
@@ -390,6 +394,40 @@ class DB_Commands:
         inventory.save()
         return f"New item {new_sku} created from {dkpn} with {quantity} on hand"
 
+    async def handler_uptime(self):
+        def format(uptime):
+            td = timedelta(milliseconds=uptime)
+            
+            days = td.days
+            hours, remainder = divmod(td.seconds, 3600)
+            minutes, seconds = divmod(remainder, 60)
+    
+            parts = []
+    
+            if days:
+                parts.append(f"{days}d")
+            if hours:
+                parts.append(f"{hours}h")
+            if minutes:
+                parts.append(f"{minutes}m")
+            if seconds or not parts:
+                parts.append(f"{seconds}s")
+
+            return " ".join(parts)
+        
+        current_time = round(time.time() * 1000)
+        bot_uptime_raw = current_time - boot_time
+        bot_uptime = format(bot_uptime_raw)
+
+        if platform.system() == "Linux":
+            with open("/proc/uptime", "r") as f:
+                system_uptime_raw = float(f.readline().split()[0]) * 1000
+                system_uptime = format(system_uptime_raw)
+        else:
+            system_uptime = "Unknown"
+            
+        return bot_uptime, system_uptime
+
     async def handler_command_help(self):
         command_list = [
             {
@@ -493,7 +531,8 @@ async def terminal_loop():
             response_message = await command_handler.handler_command_help()
 
         elif command == "about" and len(parts) >= 1:
-            text = f"""illusion \nversion: {illusion_version}""".strip("\n")
+            bot_uptime, system_uptime = await command_handler.handler_uptime()
+            text = f"""illusion \nversion: {illusion_version}\nbot uptime: {bot_uptime}\nsystem uptime: {system_uptime}""".strip("\n")
             
             hat_lines = joanne_hat.splitlines()
             text_lines = text.splitlines()
@@ -599,7 +638,8 @@ async def ping(interaction: discord.Interaction):
 
 @bot.tree.command(name="about", description="About illusion")
 async def about(interaction: discord.Interaction):
-    await interaction.response.send_message(f"illusion\nversion: {illusion_version}")
+    bot_uptime, system_uptime = await command_handler.handler_uptime()
+    await interaction.response.send_message(f"illusion\nversion: {illusion_version}\nbot uptime: {bot_uptime}\nsystem uptime: {system_uptime}")
 
 @bot.tree.command(name="resolve", description="Mark low stock warnings as resolved")
 @app_commands.describe(sku="Item Sku")
