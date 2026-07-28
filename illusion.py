@@ -8,13 +8,18 @@ import tomllib
 from pathlib import Path
 import barcode_generator, illusion_helpers
 from PIL import Image
-import os, io
+import os, io, platform, signal
 from digikey_client import DigiKeyClient
+import time
+from datetime import timedelta
 
 try:
     import readline
 except:
     print("readline not installed")
+
+shutdown_event = asyncio.Event()
+shutdown_started = False
 
 pyproject_path = Path(__file__).resolve().parents[0] / "./pyproject.toml"
 
@@ -25,6 +30,8 @@ illusion_version = pyproject["project"]["version"]
 intents = discord.Intents.default()
 
 bot = commands.Bot(command_prefix="!", intents=intents)
+
+boot_time = round(time.time() * 1000)
 
 # Had to include at least 1 other reference
 joanne_hat = r"""
@@ -390,6 +397,40 @@ class DB_Commands:
         inventory.save()
         return f"New item {new_sku} created from {dkpn} with {quantity} on hand"
 
+    async def handler_uptime(self):
+        def format(uptime):
+            td = timedelta(milliseconds=uptime)
+            
+            days = td.days
+            hours, remainder = divmod(td.seconds, 3600)
+            minutes, seconds = divmod(remainder, 60)
+    
+            parts = []
+    
+            if days:
+                parts.append(f"{days}d")
+            if hours:
+                parts.append(f"{hours}h")
+            if minutes:
+                parts.append(f"{minutes}m")
+            if seconds or not parts:
+                parts.append(f"{seconds}s")
+
+            return " ".join(parts)
+        
+        current_time = round(time.time() * 1000)
+        bot_uptime_raw = current_time - boot_time
+        bot_uptime = format(bot_uptime_raw)
+
+        if platform.system() == "Linux":
+            with open("/proc/uptime", "r") as f:
+                system_uptime_raw = float(f.readline().split()[0]) * 1000
+                system_uptime = format(system_uptime_raw)
+        else:
+            system_uptime = "Unknown"
+            
+        return bot_uptime, system_uptime
+
     async def handler_command_help(self):
         command_list = [
             {
@@ -473,8 +514,17 @@ async def terminal_loop():
     print(f"illusion {illusion_version}")
     print("ready")
 
-    while not bot.is_closed():
-        text = await asyncio.to_thread(input, "> ")
+    while not bot.is_closed() and not shutdown_event.is_set():        
+        try:
+            text = await asyncio.to_thread(input, "> ")
+        except EOFError:
+            await graceful_exit("terminal EOF")
+            break
+        except Exception as e:
+            print(f"Terminal input error: {e}")
+            await asyncio.sleep(1)
+            continue
+
         text = text.strip()
 
         if not text:
@@ -486,14 +536,16 @@ async def terminal_loop():
 
         if command == "exit" and len(parts) >= 1:
             response_message = "Exiting"
-            inventory.save()
-            await bot.close()
+            print(response_message)
+            await graceful_exit("terminal exit")
+            break
 
         elif command == "help" and len(parts) >= 1:
             response_message = await command_handler.handler_command_help()
 
         elif command == "about" and len(parts) >= 1:
-            text = f"""illusion \nversion: {illusion_version}""".strip("\n")
+            bot_uptime, system_uptime = await command_handler.handler_uptime()
+            text = f"""illusion \nversion: {illusion_version}\nbot uptime: {bot_uptime}\nsystem uptime: {system_uptime}""".strip("\n")
             
             hat_lines = joanne_hat.splitlines()
             text_lines = text.splitlines()
@@ -599,7 +651,8 @@ async def ping(interaction: discord.Interaction):
 
 @bot.tree.command(name="about", description="About illusion")
 async def about(interaction: discord.Interaction):
-    await interaction.response.send_message(f"illusion\nversion: {illusion_version}")
+    bot_uptime, system_uptime = await command_handler.handler_uptime()
+    await interaction.response.send_message(f"illusion\nversion: {illusion_version}\nbot uptime: {bot_uptime}\nsystem uptime: {system_uptime}")
 
 @bot.tree.command(name="resolve", description="Mark low stock warnings as resolved")
 @app_commands.describe(sku="Item Sku")
@@ -873,8 +926,46 @@ async def update_item(interaction: discord.Interaction, sku: str,
     response_message = await command_handler.handler_update_item(sku, updates)
     await interaction.response.send_message(response_message)
 
+async def graceful_exit(reason: str = "unknown"):
+    global shutdown_started
+
+    if shutdown_started:
+        return
+
+    shutdown_started = True
+    print(f"Graceful exit requested: {reason}")
+
+    shutdown_event.set()
+
+    try:
+        inventory.save()
+    except Exception as e:
+        print(f"Error saving inventory: {e}")
+
+    try:
+        close_method = getattr(inventory, "close", None)
+        if callable(close_method):
+            close_method()
+    except Exception as e:
+        print(f"Error closing inventory: {e}")
+
+    try:
+        await bot.close()
+    except Exception as e:
+        print(f"Error closing bot: {e}")
+
+def install_signal_handlers():
+    loop = asyncio.get_running_loop()
+
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        loop.add_signal_handler(
+            sig,
+            lambda s=sig: asyncio.create_task(graceful_exit(s.name)),
+        )
+
 @bot.event
 async def setup_hook():
+    install_signal_handlers()
     bot.loop.create_task(terminal_loop())
 
 with open("./config.yaml", "r") as file:
