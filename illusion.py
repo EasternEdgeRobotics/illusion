@@ -300,6 +300,14 @@ class DB_Commands:
 
         result = illusion_helpers.niimbot_print(bc_path, serial_port, "d110")
         return result
+
+    async def handler_bulk_print_niimbot(self, sku_lower, sku_upper):
+        serial_port = config["illusion"]["printer"]["niimbot"]["port"] 
+        font_path = config["illusion"]["printer"]["niimbot"]["font_path"]
+        font_size = config["illusion"]["printer"]["niimbot"]["font_size"]
+        
+        response_message = await illusion_helpers.bulk_niimbot_print(serial_port, "d110", font_path, font_size, sku_lower, sku_upper)
+        return response_message
     
     async def handler_print_label(self, line_1, line_2):
         serial_port = config["illusion"]["printer"]["niimbot"]["port"]
@@ -449,6 +457,11 @@ class DB_Commands:
                         "USAGE": 'print_label <line 1> ["line 2"]',
                         "DESCRIPTION": "Print a label with the specified text",
                     },
+                    {
+                        "COMMAND": "bulk_print",
+                        "USAGE": 'bulk_print [lower sku] [upper sku]',
+                        "DESCRIPTION": "Print barcodes for a range of skus",
+                    },
                 ]
             )
 
@@ -545,6 +558,8 @@ async def terminal_loop():
             
             if response_message == None:
                 response_message = await command_handler.handler_print_label(line_1, line_2)
+        elif command == "bulk_print" and config["illusion"]["printer"]["niimbot"]["enabled"] and len(parts) == 3:
+            response_message = await command_handler.handler_bulk_print_niimbot(parts[1], parts[2])
         elif command == "set" and len(parts) == 3:
             response_message = await command_handler.handler_set_stock(parts[1], parts[2])
         else:

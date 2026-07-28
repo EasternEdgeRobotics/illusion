@@ -1,8 +1,10 @@
 import discord
 import os
+import asyncio
 
 from PIL import Image, ImageDraw, ImageFont
 from niimprint import BluetoothTransport, PrinterClient, SerialTransport
+import barcode_generator
 
 FIELD_NAMES = {
     "SKU": "SKU",
@@ -107,6 +109,8 @@ def make_vendor_buttons(item):
     return view
 
 def clean_sku(sku):
+    if type(sku) != str:
+        sku = f"{sku}"
     if len(sku) <= 6:
         sku = "EER-" + ("0" * (6 - len(sku))) + sku
     return sku
@@ -361,7 +365,42 @@ def niimbot_print(img, addr, model):
     
     printer.print_image(image, density=3)
     return f"Printing...\nif this is the first print after returning from sleep it may be blank."
+
+def niimbot_print(img, addr, model):
+    try:
+        transport = SerialTransport(port=addr)
+        printer = PrinterClient(transport)
+
+        heartbeat = printer.heartbeat()
+        media_info = printer.get_rfid()
+    except Exception as e:
+        err = str(e)
+
+        if "could not open port" in err:
+            return "Unable to print, printer is likely disconnected"
+        elif "AttributeError: 'NoneType' object has no attribute 'data'" in err:
+            return "Unable to print, printer is likely asleep"
+        else:
+            return f"Unable to print, Unknown Error: {err}"
+    remaining_media = media_info["total_len"] - media_info["used_len"]
+
+    if heartbeat["closingstate"] == 0:
+        return "Unable to print, The printer seems to be open, please close it and try again."
+    if remaining_media == 0:
+        return "No labels left, please replace roll!"
     
+    if model in ("b1", "b18", "b21"):
+        max_width = 384
+    elif model in ("d11", "d110"):
+        max_width = 96
+
+    image = Image.open(img)
+
+    if image.width > max_width:
+        return "Unable to print, image too wide"
+    
+    printer.print_image(image, density=3)
+    return f"Printing...\nif this is the first print after returning from sleep it may be blank."
 
 def niimbot_printer_info(addr):
     try:
@@ -386,3 +425,60 @@ def niimbot_printer_info(addr):
         return f"Labels left: {remaining_media}/{media_info["total_len"]}\nBattery Level: {heartbeat["powerlevel"]}/4"
     else:
         return "Unable to get printer info, labels might not be loaded."
+
+async def bulk_niimbot_print(addr, model, font_path, font_size, sku_lower, sku_upper):
+    try:
+        transport = SerialTransport(port=addr)
+        printer = PrinterClient(transport)
+
+        heartbeat = printer.heartbeat()
+        media_info = printer.get_rfid()
+    except Exception as e:
+        err = str(e)
+
+        if "could not open port" in err:
+            return "Unable to print, printer is likely disconnected"
+        elif "AttributeError: 'NoneType' object has no attribute 'data'" in err:
+            return "Unable to print, printer is likely asleep"
+        else:
+            return f"Unable to print, Unknown Error: {err}"
+        
+    remaining_media = media_info["total_len"] - media_info["used_len"]
+    total_prints = len(range(int(sku_lower), (int(sku_upper) + 1)))
+
+    if heartbeat["closingstate"] == 0:
+        return "Unable to print, The printer seems to be open, please close it and try again."
+    if remaining_media == 0:
+        return "No labels left, please replace roll!"
+
+    if total_prints > int(media_info["total_len"]):
+        return f"This exceeds the max amount of prints possible on a single roll.\nPlease split this into smaller jobs. \n{total_prints} requested, {media_info["total_len"]} possible"
+    elif total_prints > remaining_media:
+        return f"This exceeds the amounts of prints left on the current roll.\nPlease split this into smaller jobs. \n{total_prints} requested, {remaining_media} available"
+
+    
+    if model in ("b1", "b18", "b21"):
+        max_width = 384
+    elif model in ("d11", "d110"):
+        max_width = 96
+
+    images = {}
+
+    # Pre generate images
+    for i in range(int(sku_lower), (int(sku_upper) + 1)):
+        sku = clean_sku(i)
+        images[sku] = barcode_generator.generate_barcode_niimbot(text=sku, font_path=font_path, font_size=font_size, output_file=f"barcode_{sku}")
+
+    for key, value in images.items():
+        image = Image.open(value)
+
+        if image.width > max_width:
+            return "Software Error: Unable to print, image too wide"
+    
+        printer.print_image(image, density=3)
+        print(f"{key}: Printing...")
+
+        # niimbot cant instantly take a new job, so we give it extra time between each one
+        await asyncio.sleep(1) 
+
+    return f"Finished"
