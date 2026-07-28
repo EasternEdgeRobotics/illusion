@@ -298,11 +298,14 @@ class DB_Commands:
     async def handler_generate_barcode(self, sku):
         return labelmaker.generate_barcode(sku)
     
-    async def handler_niimbot_barcode(self, sku):
+    async def handler_niimbot_barcode(self, sku, text):
         sku = illusion_helpers.clean_sku(sku)
         serial_port = config["illusion"]["printer"]["niimbot"]["port"] 
 
-        bc_path = labelmaker.label_barcode(sku=sku, width=320, height=96)
+        if text == None:
+            bc_path = labelmaker.label_barcode(sku=sku, width=320, height=96)
+        else:
+            bc_path = labelmaker.label_text_barcode(sku=sku, input_text=text, width=320, height=96)
 
         result = illusion_helpers.niimbot_print(bc_path, serial_port, "d110")
         return result
@@ -320,7 +323,6 @@ class DB_Commands:
             output = labelmaker.label_text(input_text=line_1, width=320, height=96)
         else:
             output = labelmaker.label_text_text(input_text_1=line_1, input_text_2=line_2, width=320, height=96)
-            output = labelmaker.label_text_barcode(sku=line_1, input_text=line_2, width=320, height=96)
         
         return illusion_helpers.niimbot_print(output, serial_port, "d110")
     
@@ -484,7 +486,7 @@ class DB_Commands:
             command_list.extend(
                 [
                     {
-                        "COMMAND": "print",
+                        "COMMAND": "print_barcode",
                         "USAGE": "print <sku>",
                         "DESCRIPTION": "Print a barcode with the printer",
                     },
@@ -583,8 +585,11 @@ async def terminal_loop():
                 response_message = await command_handler.handler_increase(parts[1], parts[2])
             else:
                 response_message = await command_handler.handler_increase(parts[1])
-        elif command == "print" and config["illusion"]["printer"]["niimbot"]["enabled"] and len(parts) >= 2:
-            response_message = await command_handler.handler_niimbot_barcode(parts[1])
+        elif command == "print_barcode" and config["illusion"]["printer"]["niimbot"]["enabled"] and len(parts) >= 2:
+            if len(parts) != 3:
+                response_message = await command_handler.handler_niimbot_barcode(parts[1], None)
+            else:
+                response_message = await command_handler.handler_niimbot_barcode(parts[1], parts[2])
         elif command == "printer_info" and config["illusion"]["printer"]["niimbot"]["enabled"] and len(parts) >= 1:
             serial_port = config["illusion"]["printer"]["niimbot"]["port"]
             response_message = illusion_helpers.niimbot_printer_info(serial_port)
@@ -815,15 +820,16 @@ async def generate_barcode(interaction: discord.Interaction, sku: str):
     await interaction.response.send_message(f"Barcode", file=file)
 
 @bot.tree.command(name="print_barcode", description="Print a barcode")
-@app_commands.describe(sku="Item Sku")
-async def print_barcode(interaction: discord.Interaction, sku: str):
+@app_commands.describe(sku="Item Sku", text="Additional text")
+async def print_barcode(interaction: discord.Interaction, sku: str, text: str | None = None):
     if not config["illusion"]["printer"]["niimbot"]["enabled"]:
         await interaction.response.send_message(f"Printer not enabled")
         return
+    
     await interaction.response.defer()
     sku = illusion_helpers.clean_sku(sku)
     
-    response_message = await command_handler.handler_niimbot_barcode(sku)
+    response_message = await command_handler.handler_niimbot_barcode(sku, text)
     await interaction.followup.send(response_message)
 
 @bot.tree.command(name="print_image", description="Print an image")
