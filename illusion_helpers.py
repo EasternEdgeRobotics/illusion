@@ -4,7 +4,7 @@ import asyncio
 
 from PIL import Image, ImageDraw, ImageFont
 from niimprint import BluetoothTransport, PrinterClient, SerialTransport
-import barcode_generator
+
 
 FIELD_NAMES = {
     "SKU": "SKU",
@@ -233,139 +233,6 @@ def make_table(data, exclude=None, field_names=None):
 
     return "\n".join([header, separator] + table_rows)
 
-def generate_label(line_1, line_2=None, font=None):
-    lines = [line_1]
-    if line_2 != None:
-        lines.append(line_2)
-    
-    width = 320
-    height = 96
-    padding = 2
-
-    usable_width = width - padding
-    usable_height = height - padding
-
-    temp_img = Image.new("RGB", [width, height])
-    draw = ImageDraw.Draw(temp_img)
-
-    def get_font(font_size):
-        if font is not None and font != "":
-            return ImageFont.truetype(font, font_size)
-        else:
-            return ImageFont.load_default()
-
-    def measure_text(font, font_size):
-        line_boxes = []
-
-        for line in lines:
-            bbox = draw.textbbox((0, 0), line, font=font)
-            left, top, right, bottom = bbox
-            line_boxes.append(
-                {
-                    "text": line,
-                    "bbox": bbox,
-                    "width": right - left,
-                    "height": bottom - top,
-                }
-            )
-
-        line_spacing = int(font_size * 0.15) if len(lines) > 1 else 0
-        total_text_height = sum(box["height"] for box in line_boxes)
-        total_text_height += line_spacing * (len(lines) - 1)
-
-        max_text_width = max(box["width"] for box in line_boxes)
-
-        return max_text_width, total_text_height, line_boxes, line_spacing
-
-    def font_fits(font_size):
-        font = get_font(font_size)
-        text_width, text_height, _, _ = measure_text(font, font_size)
-
-        return text_width <= usable_width and text_height <= usable_height
-
-    # Binary search for the largest font size that fits
-    low = 6
-    high = 96
-    best_size = low
-
-    while low <= high:
-        mid = (low + high) // 2
-
-        if font_fits(mid):
-            best_size = mid
-            low = mid + 1
-        else:
-            high = mid - 1
-
-    font = get_font(best_size)
-    _, total_text_height, line_boxes, line_spacing = measure_text(font, best_size)
-
-    img = Image.new("RGB", [width, height], "white")
-    draw = ImageDraw.Draw(img)
-
-    current_y = (height - total_text_height) / 2
-
-    for box in line_boxes:
-        text = box["text"]
-        left, top, right, bottom = box["bbox"]
-
-        text_width = box["width"]
-        text_height = box["height"]
-
-        x = (width - text_width) / 2 - left
-        y = current_y - top
-
-        draw.text((x, y), text, font=font, fill="black")
-
-        current_y += text_height + line_spacing
-
-    os.makedirs("/tmp/illusion/imgs/", exist_ok=True)
-
-    output_path = os.path.join(
-        "/tmp/illusion/imgs/",
-        f"label.png",
-    )
-    
-    img = img.rotate(90, expand=True)
-    img.save(output_path)
-    return output_path
-
-def niimbot_print(img, addr, model):
-    try:
-        transport = SerialTransport(port=addr)
-        printer = PrinterClient(transport)
-
-        heartbeat = printer.heartbeat()
-        media_info = printer.get_rfid()
-    except Exception as e:
-        err = str(e)
-
-        if "could not open port" in err:
-            return "Unable to print, printer is likely disconnected"
-        elif "AttributeError: 'NoneType' object has no attribute 'data'" in err:
-            return "Unable to print, printer is likely asleep"
-        else:
-            return f"Unable to print, Unknown Error: {err}"
-    remaining_media = media_info["total_len"] - media_info["used_len"]
-
-    if heartbeat["closingstate"] == 0:
-        return "Unable to print, The printer seems to be open, please close it and try again."
-    if remaining_media == 0:
-        return "No labels left, please replace roll!"
-    
-    if model in ("b1", "b18", "b21"):
-        max_width = 384
-    elif model in ("d11", "d110"):
-        max_width = 96
-
-    image = Image.open(img)
-
-    if image.width > max_width:
-        return "Unable to print, image too wide"
-    
-    printer.print_image(image, density=3)
-    return f"Printing...\nif this is the first print after returning from sleep it may be blank."
-
 def niimbot_print(img, addr, model):
     try:
         transport = SerialTransport(port=addr)
@@ -426,7 +293,7 @@ def niimbot_printer_info(addr):
     else:
         return "Unable to get printer info, labels might not be loaded."
 
-async def bulk_niimbot_print(addr, model, font_path, font_size, sku_lower, sku_upper):
+async def bulk_niimbot_print(addr, model, label_maker, sku_lower, sku_upper):
     try:
         transport = SerialTransport(port=addr)
         printer = PrinterClient(transport)
@@ -467,7 +334,7 @@ async def bulk_niimbot_print(addr, model, font_path, font_size, sku_lower, sku_u
     # Pre generate images
     for i in range(int(sku_lower), (int(sku_upper) + 1)):
         sku = clean_sku(i)
-        images[sku] = barcode_generator.generate_barcode_niimbot(text=sku, font_path=font_path, font_size=font_size, output_file=f"barcode_{sku}")
+        images[sku] = label_maker.label_barcode(sku=sku, width=320, height=96, output_file=f"barcode_{sku}")
 
     for key, value in images.items():
         image = Image.open(value)
