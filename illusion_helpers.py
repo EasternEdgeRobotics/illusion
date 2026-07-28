@@ -366,42 +366,6 @@ def niimbot_print(img, addr, model):
     printer.print_image(image, density=3)
     return f"Printing...\nif this is the first print after returning from sleep it may be blank."
 
-def niimbot_print(img, addr, model):
-    try:
-        transport = SerialTransport(port=addr)
-        printer = PrinterClient(transport)
-
-        heartbeat = printer.heartbeat()
-        media_info = printer.get_rfid()
-    except Exception as e:
-        err = str(e)
-
-        if "could not open port" in err:
-            return "Unable to print, printer is likely disconnected"
-        elif "AttributeError: 'NoneType' object has no attribute 'data'" in err:
-            return "Unable to print, printer is likely asleep"
-        else:
-            return f"Unable to print, Unknown Error: {err}"
-    remaining_media = media_info["total_len"] - media_info["used_len"]
-
-    if heartbeat["closingstate"] == 0:
-        return "Unable to print, The printer seems to be open, please close it and try again."
-    if remaining_media == 0:
-        return "No labels left, please replace roll!"
-    
-    if model in ("b1", "b18", "b21"):
-        max_width = 384
-    elif model in ("d11", "d110"):
-        max_width = 96
-
-    image = Image.open(img)
-
-    if image.width > max_width:
-        return "Unable to print, image too wide"
-    
-    printer.print_image(image, density=3)
-    return f"Printing...\nif this is the first print after returning from sleep it may be blank."
-
 def niimbot_printer_info(addr):
     try:
         transport = SerialTransport(port=addr)
