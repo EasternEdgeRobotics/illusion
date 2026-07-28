@@ -6,12 +6,13 @@ import asyncio
 import yaml
 import tomllib
 from pathlib import Path
-import barcode_generator, illusion_helpers
+import illusion_helpers
 from PIL import Image
 import os, io, platform, signal
 from digikey_client import DigiKeyClient
 import time
 from datetime import timedelta
+from label_maker import LabelMaker
 
 try:
     import readline
@@ -295,32 +296,31 @@ class DB_Commands:
         return "Low-stock thread archived."
     
     async def handler_generate_barcode(self, sku):
-        return barcode_generator.generate_barcode(sku)
+        return labelmaker.generate_barcode(sku)
     
     async def handler_niimbot_barcode(self, sku):
         sku = illusion_helpers.clean_sku(sku)
         serial_port = config["illusion"]["printer"]["niimbot"]["port"] 
-        font_path = config["illusion"]["printer"]["niimbot"]["font_path"]
-        font_size = config["illusion"]["printer"]["niimbot"]["font_size"]
 
-        bc_path = barcode_generator.generate_barcode_niimbot(text=sku, font_path=font_path, font_size=font_size)
+        bc_path = labelmaker.label_barcode(sku=sku, width=320, height=96)
 
         result = illusion_helpers.niimbot_print(bc_path, serial_port, "d110")
         return result
 
     async def handler_bulk_print_niimbot(self, sku_lower, sku_upper):
         serial_port = config["illusion"]["printer"]["niimbot"]["port"] 
-        font_path = config["illusion"]["printer"]["niimbot"]["font_path"]
-        font_size = config["illusion"]["printer"]["niimbot"]["font_size"]
         
-        response_message = await illusion_helpers.bulk_niimbot_print(serial_port, "d110", font_path, font_size, sku_lower, sku_upper)
+        response_message = await illusion_helpers.bulk_niimbot_print(serial_port, "d110", labelmaker, sku_lower, sku_upper)
         return response_message
     
     async def handler_print_label(self, line_1, line_2):
         serial_port = config["illusion"]["printer"]["niimbot"]["port"]
-        font = config["illusion"]["printer"]["niimbot"]["font_path"]
 
-        output = illusion_helpers.generate_label(line_1, line_2, font)
+        if line_2 == None:
+            output = labelmaker.label_text(input_text=line_1, width=320, height=96)
+        else:
+            output = labelmaker.label_text_text(input_text_1=line_1, input_text_2=line_2, width=320, height=96)
+            output = labelmaker.label_text_barcode(sku=line_1, input_text=line_2, width=320, height=96)
         
         return illusion_helpers.niimbot_print(output, serial_port, "d110")
     
@@ -977,6 +977,7 @@ FORUM_CHANNEL_ID = config["illusion"]["discord"]["fourm_id"]
 
 command_handler = DB_Commands()
 inventory = SpreadsheetManager(config["illusion"]["database_location"])
+labelmaker = LabelMaker(config["illusion"]["printer"]["niimbot"]["font_path"])
 
 # Digikey support
 if config["illusion"]["digikey"]["enabled"] == True:
