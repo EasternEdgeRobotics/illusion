@@ -452,9 +452,9 @@ async def bulk_niimbot_print(addr, model, font_path, font_size, sku_lower, sku_u
         return "No labels left, please replace roll!"
 
     if total_prints > int(media_info["total_len"]):
-        return f"This exceeds the max amount of prints possible on a single roll, please split this into smaller jobs. \n{total_prints} requested, {media_info["total_len"]} possible"
+        return f"This exceeds the max amount of prints possible on a single roll.\nPlease split this into smaller jobs. \n{total_prints} requested, {media_info["total_len"]} possible"
     elif total_prints > remaining_media:
-        return f"This exceeds the amounts of prints left on the current roll, please split this into smaller jobs. \n{total_prints} requested, {remaining_media} available"
+        return f"This exceeds the amounts of prints left on the current roll.\nPlease split this into smaller jobs. \n{total_prints} requested, {remaining_media} available"
 
     
     if model in ("b1", "b18", "b21"):
@@ -462,16 +462,21 @@ async def bulk_niimbot_print(addr, model, font_path, font_size, sku_lower, sku_u
     elif model in ("d11", "d110"):
         max_width = 96
 
+    images = {}
+
+    # Pre generate images
     for i in range(int(sku_lower), (int(sku_upper) + 1)):
         sku = clean_sku(i)
-        bc_path = barcode_generator.generate_barcode_niimbot(text=sku, font_path=font_path, font_size=font_size)
-        image = Image.open(bc_path)
+        images[sku] = barcode_generator.generate_barcode_niimbot(text=sku, font_path=font_path, font_size=font_size, output_file=f"barcode_{sku}")
+
+    for key, value in images.items():
+        image = Image.open(value)
 
         if image.width > max_width:
             return "Software Error: Unable to print, image too wide"
     
         printer.print_image(image, density=3)
-        print(f"{sku}: Printing...")
+        print(f"{key}: Printing...")
 
         # niimbot cant instantly take a new job, so we give it extra time between each one
         await asyncio.sleep(1) 

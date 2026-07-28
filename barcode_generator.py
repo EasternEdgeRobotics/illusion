@@ -1,6 +1,7 @@
 from io import BytesIO
 from pathlib import Path
 from typing import Optional
+import os
 
 from barcode import Code128
 from barcode.writer import ImageWriter
@@ -9,7 +10,8 @@ from PIL import Image, ImageDraw, ImageFont
 
 def generate_barcode(text: str, output_file: str = "barcode") -> str:
     barcode = Code128(text, writer=ImageWriter())
-    filename = barcode.save(output_file)
+    output_path = _png_filename(output_file)
+    filename = barcode.save(output_path)
 
     return filename
 
@@ -124,9 +126,14 @@ def _load_font(font_path: Optional[str], font_size: int) -> ImageFont.ImageFont:
 
 
 def _png_filename(output_file: str) -> str:
-    path = Path(output_file)
+    os.makedirs("/tmp/illusion/imgs/", exist_ok=True)
 
-    if path.suffix.lower() != ".png":
-        path = path.with_suffix(".png")
+    output_path = os.path.join(
+        "/tmp/illusion/imgs/",
+        f"{output_file}",
+    )
 
-    return str(path)
+    if not output_path.endswith(".png"):
+        output_path = f"{output_path}.png"
+
+    return str(output_path)
