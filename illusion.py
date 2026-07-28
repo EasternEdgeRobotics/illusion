@@ -8,7 +8,7 @@ import tomllib
 from pathlib import Path
 import barcode_generator, illusion_helpers
 from PIL import Image
-import os, io, platform
+import os, io, platform, signal
 from digikey_client import DigiKeyClient
 import time
 from datetime import timedelta
@@ -17,6 +17,9 @@ try:
     import readline
 except:
     print("readline not installed")
+
+shutdown_event = asyncio.Event()
+shutdown_started = False
 
 pyproject_path = Path(__file__).resolve().parents[0] / "./pyproject.toml"
 
@@ -511,8 +514,17 @@ async def terminal_loop():
     print(f"illusion {illusion_version}")
     print("ready")
 
-    while not bot.is_closed():
-        text = await asyncio.to_thread(input, "> ")
+    while not bot.is_closed() and not shutdown_event.is_set():        
+        try:
+            text = await asyncio.to_thread(input, "> ")
+        except EOFError:
+            await graceful_exit("terminal EOF")
+            break
+        except Exception as e:
+            print(f"Terminal input error: {e}")
+            await asyncio.sleep(1)
+            continue
+
         text = text.strip()
 
         if not text:
@@ -524,8 +536,9 @@ async def terminal_loop():
 
         if command == "exit" and len(parts) >= 1:
             response_message = "Exiting"
-            inventory.save()
-            await bot.close()
+            print(response_message)
+            await graceful_exit("terminal exit")
+            break
 
         elif command == "help" and len(parts) >= 1:
             response_message = await command_handler.handler_command_help()
@@ -913,8 +926,46 @@ async def update_item(interaction: discord.Interaction, sku: str,
     response_message = await command_handler.handler_update_item(sku, updates)
     await interaction.response.send_message(response_message)
 
+async def graceful_exit(reason: str = "unknown"):
+    global shutdown_started
+
+    if shutdown_started:
+        return
+
+    shutdown_started = True
+    print(f"Graceful exit requested: {reason}")
+
+    shutdown_event.set()
+
+    try:
+        inventory.save()
+    except Exception as e:
+        print(f"Error saving inventory: {e}")
+
+    try:
+        close_method = getattr(inventory, "close", None)
+        if callable(close_method):
+            close_method()
+    except Exception as e:
+        print(f"Error closing inventory: {e}")
+
+    try:
+        await bot.close()
+    except Exception as e:
+        print(f"Error closing bot: {e}")
+
+def install_signal_handlers():
+    loop = asyncio.get_running_loop()
+
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        loop.add_signal_handler(
+            sig,
+            lambda s=sig: asyncio.create_task(graceful_exit(s.name)),
+        )
+
 @bot.event
 async def setup_hook():
+    install_signal_handlers()
     bot.loop.create_task(terminal_loop())
 
 with open("./config.yaml", "r") as file:
