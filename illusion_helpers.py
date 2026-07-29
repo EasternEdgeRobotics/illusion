@@ -334,7 +334,7 @@ async def bulk_niimbot_print(addr, model, label_maker, sku_lower, sku_upper):
     # Pre generate images
     for i in range(int(sku_lower), (int(sku_upper) + 1)):
         sku = clean_sku(i)
-        images[sku] = label_maker.label_barcode(sku=sku, width=320, height=96, output_file=f"barcode_{sku}")
+        images[sku] = label_maker.render_label(style_name="barcode", width=320, height=96, rotate=90, output=f"barcode_{sku}", sku=sku)
 
     for key, value in images.items():
         image = Image.open(value)
