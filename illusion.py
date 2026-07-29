@@ -296,16 +296,16 @@ class DB_Commands:
         return "Low-stock thread archived."
     
     async def handler_generate_barcode(self, sku):
-        return labelmaker.generate_barcode(sku)
+        return labelmaker.render_label(style_name="classic_barcode", sku=sku, width=350, height=280, rotate=0)
     
     async def handler_niimbot_barcode(self, sku, text):
         sku = illusion_helpers.clean_sku(sku)
         serial_port = config["illusion"]["printer"]["niimbot"]["port"] 
 
         if text == None:
-            bc_path = labelmaker.label_barcode(sku=sku, width=320, height=96)
+            bc_path = labelmaker.render_label(style_name="slim_barcode", sku=sku, width=320, height=96)
         else:
-            bc_path = labelmaker.label_text_barcode(sku=sku, input_text=text, width=320, height=96)
+            bc_path = labelmaker.render_label(style_name="label_barcode", sku=sku, input_text_1=text, width=320, height=96)
 
         result = illusion_helpers.niimbot_print(bc_path, serial_port, "d110")
         return result
@@ -320,9 +320,9 @@ class DB_Commands:
         serial_port = config["illusion"]["printer"]["niimbot"]["port"]
 
         if line_2 == None:
-            output = labelmaker.label_text(input_text=line_1, width=320, height=96)
+            output = labelmaker.render_label(style_name="label_1_line", input_text_1=line_1, width=320, height=96)
         else:
-            output = labelmaker.label_text_text(input_text_1=line_1, input_text_2=line_2, width=320, height=96)
+            output = labelmaker.render_label(style_name="label_2_line", input_text_1=line_1, input_text_2=line_2, width=320, height=96)
         
         return illusion_helpers.niimbot_print(output, serial_port, "d110")
     

@@ -7,7 +7,54 @@ from barcode import Code128
 from barcode.writer import ImageWriter
 from PIL import Image, ImageDraw, ImageFont
 
-class LabelMaker:
+LABEL_STYLES = {
+    "slim_barcode": {
+        "columns": [1, 30], # Values > 1 directly map to pixels
+        "rows": [1],
+        "cells": [
+            {"type": "barcode", "value": "sku", "col": 0,"row": 0,},
+            {"type": "text", "value": "sku", "col": 1, "row": 0, "rotate": 90,},
+        ],
+    },
+
+    "label_barcode": {
+        "columns": [1, 30],
+        "rows": [0.5, 0.5],
+        "cells": [
+            {"type": "text", "value": "input_text_1", "col": 0, "row": 0,},
+            {"type": "barcode", "value": "sku", "col": 0, "row": 1,},
+            {"type": "text", "value": "sku", "col": 1, "row": 0, "rowspan": 2, "rotate": 90,},
+        ],
+    },
+
+    "label_1_line": {
+        "columns": [1],
+        "rows": [1],
+        "cells": [
+            {"type": "text", "value": "input_text_1", "col": 0, "row": 0,},
+        ],
+    },
+
+    "label_2_line": {
+        "columns": [1],
+        "rows": [0.5, 0.5],
+        "cells": [
+            {"type": "text", "value": "input_text_1", "col": 0, "row": 0,},
+            {"type": "text", "value": "input_text_2", "col": 0, "row": 1,},
+        ],
+    },
+
+    "classic_barcode": {
+        "columns": [1], # Values > 1 directly map to pixels
+        "rows": [0.8, 0.2],
+        "cells": [
+            {"type": "barcode", "value": "sku", "col": 0,"row": 0,},
+            {"type": "text", "value": "sku", "col": 0, "row": 1,},
+        ],
+    },
+}
+
+class LabelMaker:    
     def __init__(self, font):
         self._font = font
         self._min_font_size = 6
@@ -123,146 +170,83 @@ class LabelMaker:
 
         return str(output_path)
 
-    
-    # +------------------------+-----+
-    # | Barcode                |  S  |
-    # |                        |  K  |
-    # |                        |  U  |
-    # +------------------------+-----+
-    def label_barcode(self, sku, width, height, output="label", rotate=90):        
-        sku_label_w = height - (self._padding * 2)
-        sku_label_h = 30
-        sku_label_x = width - sku_label_h + self._padding
-        sku_label_y = 0 + self._padding
+    def _resolve_tracks(self, tracks, total_size):
+        fixed_total = sum(track for track in tracks if track > 1)
+        flexible_total = sum(track for track in tracks if track <= 1)
 
-        barcode_w = width - sku_label_h - (self._padding * 2)
-        barcode_h = int((height) - (self._padding * 2))
-        barcode_x = 0 + self._padding
-        barcode_y = 0 + self._padding
+        remaining = total_size - fixed_total
+
+        sizes = []
+
+        for track in tracks:
+            if track > 1:
+                sizes.append(int(track))
+            else:
+                sizes.append(int(remaining * (track / flexible_total)))
+
+        diff = total_size - sum(sizes)
+
+        if sizes:
+            sizes[-1] += diff
+
+        return sizes
+
+    def _grid_rect(self, style, width, height, cell):
+        columns = self._resolve_tracks(style["columns"], width)
+        rows = self._resolve_tracks(style["rows"], height)
+
+        col = cell["col"]
+        row = cell["row"]
+        colspan = cell.get("colspan", 1)
+        rowspan = cell.get("rowspan", 1)
+
+        x = sum(columns[:col])
+        y = sum(rows[:row])
+        w = sum(columns[col : col + colspan])
+        h = sum(rows[row : row + rowspan])
+
+        return x, y, w, h
+
+    def render_label(self, style_name, width, height, output="label", rotate=90, **values,):
+        style = LABEL_STYLES[style_name]
 
         label = Image.new("RGB", (width, height), "white")
 
-        barcode = self._barcode(sku, barcode_w, barcode_h)
-        sku_label = self._text(sku, sku_label_w, sku_label_h - (self._padding * 2))
+        for cell in style["cells"]:
+            x, y, w, h = self._grid_rect(style, width, height, cell)
 
-        sku_label = sku_label.rotate(90, expand=True)
+            padded_x = x + self._padding
+            padded_y = y + self._padding
+            padded_w = max(1, w - self._padding * 2)
+            padded_h = max(1, h - self._padding * 2)
 
-        label.paste(barcode, (barcode_x, barcode_y))
-        label.paste(sku_label, (sku_label_x, sku_label_y))
+            value_key = cell["value"]
 
-        label = label.rotate(rotate, expand=True)
-        
+            if value_key not in values:
+                raise ValueError(f"Missing value for label field: {value_key}")
+
+            value = values[value_key]
+
+            if cell["type"] == "text":
+                if cell.get("rotate") in [90, 270]:
+                    image = self._text(value, padded_h, padded_w)
+                else:
+                    image = self._text(value, padded_w, padded_h)
+            elif cell["type"] == "barcode":
+                image = self._barcode(value, padded_w, padded_h)
+
+            if cell.get("rotate"):
+                image = image.rotate(cell["rotate"], expand=True)
+
+            paste_x = padded_x + (padded_w - image.width) // 2
+            paste_y = padded_y + (padded_h - image.height) // 2
+
+            label.paste(image, (paste_x, paste_y))
+
+        if rotate:
+            label = label.rotate(rotate, expand=True)
+
         output_path = self._png_filename(output)
         label.save(output_path)
 
         return output_path
-    
-    # +------------------------+-----+
-    # | Text                   |  S  |
-    # |------------------------|  K  |
-    # | Barcode                |  U  |
-    # +------------------------+-----+
-    def label_text_barcode(self, sku, input_text, width, height, output="label", rotate=90, text_split = 0.5, barcode_split = 0.5):
-        if text_split + barcode_split != 1.0:
-            raise ValueError("Split values must be equal to 1.0")
-        
-        sku_label_w = height - (self._padding * 2)
-        sku_label_h = 30
-        sku_label_x = width - sku_label_h + self._padding
-        sku_label_y = 0 + self._padding
-
-        text_w = width - sku_label_h - (self._padding * 2)
-        text_h = int((height * text_split) - (self._padding * 2))
-        text_x = 0 + self._padding
-        text_y = 0 + self._padding
-
-        barcode_w = width - sku_label_h - (self._padding * 2)
-        barcode_h = int((height * barcode_split) - (self._padding * 2))
-        barcode_x = 0 + self._padding
-        barcode_y = text_h + 1 + self._padding
-
-        label = Image.new("RGB", (width, height), "white")
-
-        barcode = self._barcode(sku, barcode_w, barcode_h)
-        text = self._text(input_text, text_w, text_h)
-        sku_label = self._text(sku, sku_label_w, sku_label_h - (self._padding * 2))
-
-        sku_label = sku_label.rotate(90, expand=True)
-
-        label.paste(barcode, (barcode_x, barcode_y))
-        label.paste(text, (text_x, text_y))
-        label.paste(sku_label, (sku_label_x, sku_label_y))
-
-        label = label.rotate(rotate, expand=True)
-        
-        output_path = self._png_filename(output)
-        label.save(output_path)
-
-        return output_path
-
-    # +------------------------------+
-    # | Text                         |
-    # |                              |
-    # |                              |
-    # +------------------------------+
-    def label_text(self, input_text, width, height, output="label", rotate=90):
-
-        text_w = width - (self._padding * 2)
-        text_h = int(height - (self._padding * 2))
-        text_x = 0 + self._padding
-        text_y = 0 + self._padding
-
-        label = Image.new("RGB", (width, height), "white")
-
-        text1 = self._text(input_text, text_w, text_h)
-
-        label.paste(text1, (text_x, text_y))
-
-        label = label.rotate(rotate, expand=True)
-        
-        output_path = self._png_filename(output)
-        label.save(output_path)
-
-        return output_path
-
-    # +------------------------------+
-    # | Text 1                       |
-    # |------------------------------|
-    # | Text 2                       |
-    # +------------------------------+
-    def label_text_text(self, input_text_1, input_text_2, width, height, output="label", rotate=90, text_1_split = 0.5, text_2_split = 0.5):
-        if text_1_split + text_2_split != 1.0:
-            raise ValueError("Split values must be equal to 1.0")
-
-        text1_w = width - (self._padding * 2)
-        text1_h = int((height * text_1_split) - (self._padding * 2))
-        text1_x = 0 + self._padding
-        text1_y = 0 + self._padding
-
-        text2_w = width - (self._padding * 2)
-        text2_h = int((height * text_2_split) - (self._padding * 2))
-        text2_x = 0 + self._padding
-        text2_y = text1_h + 1 + self._padding
-
-        label = Image.new("RGB", (width, height), "white")
-
-        text1 = self._text(input_text_1, text1_w, text1_h)
-        text2 = self._text(input_text_2, text2_w, text2_h)
-
-        label.paste(text1, (text1_x, text1_y))
-        label.paste(text2, (text2_x, text2_y))
-
-        label = label.rotate(rotate, expand=True)
-        
-        output_path = self._png_filename(output)
-        label.save(output_path)
-
-        return output_path
-
-    # Standard size barcodes, mostly here because I had it in the old barcode_generator.py
-    def generate_barcode(self, text: str, output_file: str = "barcode") -> str:
-        barcode = Code128(text, writer=ImageWriter())
-        output_path = self._png_filename(output_file)
-        filename = barcode.save(output_path)
-
-        return filename
