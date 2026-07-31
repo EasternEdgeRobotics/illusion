@@ -727,7 +727,7 @@ async def increase(interaction: discord.Interaction, sku: str, amount: str | Non
 
 @bot.tree.command(name="info", description="Get info about an item")
 @app_commands.describe(sku="Item Sku", hide_ext="Show or hide extra values")
-async def info(interaction: discord.Interaction, sku: str, hide_ext: bool = False):
+async def info(interaction: discord.Interaction, sku: str, hide_ext: bool = True):
     response_message = await command_handler.handler_info(sku, hide_ext)
 
     if response_message.startswith("Invalid sku"):
@@ -736,7 +736,10 @@ async def info(interaction: discord.Interaction, sku: str, hide_ext: bool = Fals
         cleaned_sku = illusion_helpers.clean_sku(sku)
         item = inventory.get_item(cleaned_sku)
 
-        await interaction.response.send_message(f"```{response_message}```", view=illusion_helpers.make_vendor_buttons(item),)
+        if len(response_message) <= 2000:
+            await interaction.response.send_message(f"```{response_message}```", view=illusion_helpers.make_vendor_buttons(item),)
+        else:
+            await interaction.response.send_message(f"I didnt feel like handling info lookups with > 2000 chars, if thix happens from a real item, please ping me -PC")
 
 @bot.tree.command(name="delete", description="Delete an item")
 @app_commands.describe(sku="Item Sku")
