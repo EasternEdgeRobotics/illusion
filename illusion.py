@@ -181,7 +181,6 @@ class DB_Commands:
     
     async def handler_decrease(self, sku, amount=None):
         global inventory
-        global channel
 
         sku = illusion_helpers.clean_sku(sku)
 
@@ -194,15 +193,7 @@ class DB_Commands:
             thread_name = None
 
             if result["low_changed"]:
-                thread_with_message = await channel.create_thread(
-                    name=f"{item['NAME']}: {item['SKU']}",
-                    content=illusion_helpers.make_low_thread_content(item),
-                    view=illusion_helpers.make_vendor_buttons(item),
-                )
-                thread_name = thread_with_message.thread.name
-
-                inventory.update_item(sku, {"LOW_THREAD_ID": thread_with_message.thread.id,},)
-                inventory.save()
+                thread_name = await self.create_low_thread(sku)
 
             if item["TRACKING_MODE"] == "KANBAN":
                 if result["low_changed"]:
@@ -235,42 +226,86 @@ class DB_Commands:
 
         sku = illusion_helpers.clean_sku(sku)
 
-        if inventory.validate_sku(sku):
-            item = inventory.increase_item(sku, float(amount))
-            inventory.save()
+        if not inventory.validate_sku(sku):
+            return f"Invalid sku: {sku}"
 
-            unit = item["UNIT"] or "units"
+        old_item = inventory.get_item(sku)
+        was_low = old_item["LOW"]
+        old_thread_id = old_item["LOW_THREAD_ID"]
 
-            response_message = (
-                f"{sku} increased by {illusion_helpers.format_quantity(amount)} {unit}. "
-                f"New stock: {illusion_helpers.format_quantity(item['QUANTITY_ON_HAND'])} {unit}. "
-                f"Low: {item['LOW']}"
-            )
-        else:
-            response_message = f"Invalid sku: {sku}"
+        item = inventory.increase_item(sku, float(amount))
+        inventory.save()
+
+        unit = item["UNIT"] or "units"
+
+        response_message = (
+            f"{sku} increased by {illusion_helpers.format_quantity(amount)} {unit}. "
+            f"New stock: {illusion_helpers.format_quantity(item['QUANTITY_ON_HAND'])} {unit}. "
+            f"Low: {item['LOW']}"
+        )
+
+        if item["LOW"] and not was_low:
+            thread_name = await self.create_low_thread(sku)
+            response_message += f"\nLow threshold reached, thread: {thread_name} created"
+
+        elif not item["LOW"] and old_thread_id is not None:
+            thread_message = await self.archive_low_thread(sku)
+            response_message += f"\n{thread_message}"
 
         return response_message
-    
+
     async def handler_set_stock(self, sku, quantity):
         global inventory
 
         sku = illusion_helpers.clean_sku(sku)
 
-        if inventory.validate_sku(sku):
-            item = inventory.set_stock(sku, float(quantity))
-            inventory.save()
+        if not inventory.validate_sku(sku):
+            return f"Invalid sku: {sku}"
 
-            unit = item["UNIT"] or "units"
+        old_item = inventory.get_item(sku)
+        was_low = old_item["LOW"]
+        old_thread_id = old_item["LOW_THREAD_ID"]
 
-            response_message = (
-                f"{sku} stock set to "
-                f"{illusion_helpers.format_quantity(item['QUANTITY_ON_HAND'])} {unit}. "
-                f"Low: {item['LOW']}"
-            )
-        else:
-            response_message = f"Invalid sku: {sku}"
+        item = inventory.set_stock(sku, float(quantity))
+        inventory.save()
+
+        unit = item["UNIT"] or "units"
+
+        response_message = (
+            f"{sku} stock set to "
+            f"{illusion_helpers.format_quantity(item['QUANTITY_ON_HAND'])} {unit}. "
+            f"Low: {item['LOW']}"
+        )
+
+        if item["LOW"] and not was_low:
+            thread_name = await self.create_low_thread(sku)
+            response_message += f"\nLow threshold reached, thread: {thread_name} created"
+
+        elif not item["LOW"] and old_thread_id is not None:
+            thread_message = await self.archive_low_thread(sku)
+            response_message += f"\n{thread_message}"
 
         return response_message
+
+    async def create_low_thread(self, sku):
+        global inventory
+        global channel
+
+        item = inventory.get_item(sku)
+
+        if item is None:
+            return None
+
+        thread_with_message = await channel.create_thread(
+            name=f"{item['NAME']}: {item['SKU']}",
+            content=illusion_helpers.make_low_thread_content(item),
+            view=illusion_helpers.make_vendor_buttons(item),
+        )
+
+        inventory.update_item(sku, {"LOW_THREAD_ID": thread_with_message.thread.id,},)
+        inventory.save()
+
+        return thread_with_message.thread.name
     
     async def archive_low_thread(self, sku):
         global inventory
@@ -703,11 +738,6 @@ async def set_stock(interaction: discord.Interaction, sku: str, value: str):
     response_message = await command_handler.handler_set_stock(sku, value)
     await interaction.response.send_message(response_message)
 
-    cleaned_sku = illusion_helpers.clean_sku(sku)
-    item = inventory.get_item(cleaned_sku)
-    if item["LOW"] == False and item["LOW_THREAD_ID"] != None:
-        await command_handler.archive_low_thread(cleaned_sku)
-
 @bot.tree.command(name="decrease", description="Decrease current stock")
 @app_commands.describe(sku="Item Sku", amount="Amount to decrease by")
 async def decrease(interaction: discord.Interaction, sku: str, amount: str | None = "1"):
@@ -719,11 +749,6 @@ async def decrease(interaction: discord.Interaction, sku: str, amount: str | Non
 async def increase(interaction: discord.Interaction, sku: str, amount: str | None = "1"):
     response_message = await command_handler.handler_increase(sku, amount)
     await interaction.response.send_message(response_message)
-
-    cleaned_sku = illusion_helpers.clean_sku(sku)
-    item = inventory.get_item(cleaned_sku)
-    if item["LOW"] == False and item["LOW_THREAD_ID"] != None:
-        await command_handler.archive_low_thread(cleaned_sku)
 
 @bot.tree.command(name="info", description="Get info about an item")
 @app_commands.describe(sku="Item Sku", hide_ext="Show or hide extra values")
