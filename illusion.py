@@ -778,7 +778,7 @@ async def add_kanban(interaction: discord.Interaction, item_name: str, priority:
 
 @bot.tree.command(name="add_hybrid", description="Add item to inventory w/ hybrid tracking")
 @app_commands.describe(item_name="Item Name",
-                       priority="Item Priorit, 1-10",
+                       priority="Item Priority, 1-10",
                        order_quantity="Number of units to order when stock low", unit="Unit name",
                        quantity="Number of units on hand", low_threshold="Minimum Stock", decrease_amount="Amount to decrease by",
                        vendor_1="Source 1 for Item", link_1="Source 1 Purchase Link",
