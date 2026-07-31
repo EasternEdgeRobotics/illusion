@@ -90,6 +90,17 @@ class DigiKeyClient:
             path = f"/Barcoding/v3/Product2DBarcodes/{urllib.parse.quote(barcode, safe='')}"
         return self._get(path)
     
+    def lookup_part_number(self, part_number: str):
+        part_number = part_number.strip()
+
+        path = (
+            "/products/v4/search/"
+            f"{urllib.parse.quote(part_number, safe='')}"
+            "/productdetails"
+        )
+
+        return self._get(path)
+    
 if __name__ == "__main__":
     import webbrowser
 
