@@ -746,7 +746,7 @@ async def delete(interaction: discord.Interaction, sku: str):
 
 async def add_item(interaction: discord.Interaction, item_name: str, priority: int, 
                    quantity: float, order_quantity: float, low_threshold: float, unit: str,
-                   vendor_1: str, link_1: str, vendor_2: str | None = None, link_2: str | None = None, 
+                   vendor_1: str | None = None, link_1: str | None = None, vendor_2: str | None = None, link_2: str | None = None, 
                    vendor_3: str | None = None, link_3: str | None = None, vendor_4: str | None = None, 
                    link_4: str | None = None, vendor_5: str | None = None, link_5: str | None = None):
 
@@ -767,7 +767,7 @@ async def add_item(interaction: discord.Interaction, item_name: str, priority: i
                        )
 
 async def add_kanban(interaction: discord.Interaction, item_name: str, priority: int, order_quantity: float,
-                   vendor_1: str, link_1: str, vendor_2: str | None = None, link_2: str | None = None, 
+                   vendor_1: str | None = None, link_1: str | None = None, vendor_2: str | None = None, link_2: str | None = None, 
                    vendor_3: str | None = None, link_3: str | None = None, vendor_4: str | None = None, 
                    link_4: str | None = None, vendor_5: str | None = None, link_5: str | None = None):
 
@@ -790,7 +790,7 @@ async def add_kanban(interaction: discord.Interaction, item_name: str, priority:
 
 async def add_hybrid(interaction: discord.Interaction, item_name: str, priority: int, 
                    quantity: float, order_quantity: float, low_threshold: float, unit: str, decrease_amount: float,
-                   vendor_1: str, link_1: str, vendor_2: str | None = None, link_2: str | None = None, 
+                   vendor_1: str | None = None, link_1: str | None = None, vendor_2: str | None = None, link_2: str | None = None, 
                    vendor_3: str | None = None, link_3: str | None = None, vendor_4: str | None = None, 
                    link_4: str | None = None, vendor_5: str | None = None, link_5: str | None = None):
 
