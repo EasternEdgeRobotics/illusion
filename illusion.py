@@ -815,6 +815,27 @@ async def add_hybrid(interaction: discord.Interaction, item_name: str, priority:
 
     await interaction.response.send_message(response_message)
 
+@bot.tree.command(name="add_with_dkpn", description="Add item to inventory w/ per item tracking, getting info using a Digikey part number")
+@app_commands.describe(item_name="Item Name",
+                       priority="Item Priority, 1-10",
+                       order_quantity="Number of units to order when stock low", unit="Unit name", digikey_part_number="Digikey Part Number",
+                       quantity="Number of units on hand", low_threshold="Minimum Stock",
+                       )
+
+async def add_hybrid(interaction: discord.Interaction, digikey_part_number: str, priority: int, 
+                   quantity: float, order_quantity: float, low_threshold: float, unit: str, item_name: str | None = None):
+
+    dkpn_info = dk.lookup_part_number(digikey_part_number)
+    if item_name == None:
+        item_name = dkpn_info["Product"]["Manufacturer"]["Name"] + dkpn_info["Product"]["Description"]["ProductDescription"]
+
+
+    response_message = await command_handler.handler_add_item(item_name, priority, order_quantity, "HYBRID", 
+                                                              quantity, low_threshold, unit, 1, None, None, 
+                                                              None, None, None, None, None, None, None, None, digikey_part_number,)
+
+    await interaction.response.send_message(response_message)
+
 # Something about search makes discord hate it, no clue why -PC
 @bot.tree.command(name="search", description="Search inventory by item name")
 @app_commands.describe(name="Item name")
