@@ -170,7 +170,9 @@ class DB_Commands:
 
         sku = illusion_helpers.clean_sku(sku)
 
-        if inventory.validate_sku(sku):
+        if amount != None and int(amount) <= 0:
+            return f"Quantity must be greater than 0"
+        elif inventory.validate_sku(sku):
             result = inventory.decrease_item(sku, amount)
             item = result["item"]
 
@@ -206,10 +208,11 @@ class DB_Commands:
                 response_message += f"\nLow threshold reached, thread: {thread_name} created"
             elif item["LOW"]:
                 response_message += "\nItem is already marked as low."
+
+            inventory.save()
         else:
             response_message = f"Invalid sku: {sku}"
 
-        inventory.save()
         return response_message
     
     async def handler_increase(self, sku, amount=1):
