@@ -94,17 +94,20 @@ class DB_Commands:
         
         return response_message
     
-    async def handler_info(self, sku):
+    async def handler_info(self, sku, hide_ext=True):
         global inventory
 
         sku = illusion_helpers.clean_sku(sku)
         if inventory.validate_sku(sku):
             item = inventory.get_item(sku)
-            exclude = ["PRIORITY", "TRACKING_MODE", "LOW_THRESHOLD", "UNIT", "LOW_THREAD_ID", "DECREASE_AMOUNT", 
-                        "VENDOR_1", "LINK_1", "VENDOR_2", "LINK_2", "VENDOR_3", "LINK_3", "VENDOR_4", "LINK_4", "VENDOR_5", "LINK_5"]
+            if hide_ext:
+                exclude = ["PRIORITY", "TRACKING_MODE", "LOW_THRESHOLD", "UNIT", "LOW_THREAD_ID", "DECREASE_AMOUNT", 
+                            "VENDOR_1", "LINK_1", "VENDOR_2", "LINK_2", "VENDOR_3", "LINK_3", "VENDOR_4", "LINK_4", "VENDOR_5", "LINK_5"]
 
-            if item["TRACKING_MODE"] == "KANBAN":
-                exclude.append("QUANTITY_ON_HAND")
+                if item["TRACKING_MODE"] == "KANBAN":
+                    exclude.append("QUANTITY_ON_HAND")
+            else:
+                exclude = []
             
             response_message = illusion_helpers.make_table(item, exclude)
         else:
@@ -711,9 +714,9 @@ async def increase(interaction: discord.Interaction, sku: str, amount: str | Non
         await command_handler.archive_low_thread(cleaned_sku)
 
 @bot.tree.command(name="info", description="Get info about an item")
-@app_commands.describe(sku="Item Sku")
-async def info(interaction: discord.Interaction, sku: str):
-    response_message = await command_handler.handler_info(sku)
+@app_commands.describe(sku="Item Sku", hide_ext="Show or hide extra values")
+async def info(interaction: discord.Interaction, sku: str, hide_ext: bool = False):
+    response_message = await command_handler.handler_info(sku, hide_ext)
 
     if response_message.startswith("Invalid sku"):
         await interaction.response.send_message(response_message)
