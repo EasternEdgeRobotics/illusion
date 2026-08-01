@@ -854,7 +854,7 @@ async def add_hybrid(interaction: discord.Interaction, digikey_part_number: str,
 
     dkpn_info = dk.lookup_part_number(digikey_part_number)
     if item_name == None:
-        item_name = dkpn_info["Product"]["Manufacturer"]["Name"] + dkpn_info["Product"]["Description"]["ProductDescription"]
+        item_name = f"{dkpn_info["Product"]["Manufacturer"]["Name"]} {dkpn_info["Product"]["Description"]["ProductDescription"]}"
 
 
     response_message = await command_handler.handler_add_item(item_name, priority, order_quantity, "HYBRID", 
