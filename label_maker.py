@@ -59,18 +59,39 @@ LABEL_STYLES = {
         "columns": [0.3, 0.4, 0.3],
         "rows": [1],
         "cells": [
-            {"type": "text", "value": "input_text_1", "col": 0, "row": 0, "rotate": 270, "wrap": "True",},
-            {"type": "text", "value": "input_text_2", "col": 2, "row": 0, "rotate": 90, "wrap": "True",},
+            {"type": "text", "value": "input_text_1", "col": 0, "row": 0, "rotate": 270, "wrap": True,},
+            {"type": "text", "value": "input_text_2", "col": 2, "row": 0, "rotate": 90, "wrap": True,},
         ],
     },
 
-    "cable_label_barcode": {
-        "columns": [0.3, 0.3, 0.3, 0.1],
+    "cable_label_qr": {
+        "columns": [0.4, 0.3, 0.3, 30],
         "rows": [1],
         "cells": [
-            {"type": "text", "value": "input_text_1", "col": 0, "row": 0, "rotate": 270, "wrap": "True",},
+            {"type": "text", "value": "input_text_1", "col": 0, "row": 0, "rotate": 270, "wrap": True,},
             {"type": "qr", "value": "sku", "col": 2, "row": 0,},
             {"type": "text", "value": "sku", "col": 3, "row": 0, "rotate": 90,},
+        ],
+    },
+
+    "label_1_line_qr": {
+        "columns": [0.7, 0.3, 30],
+        "rows": [1],
+        "cells": [
+            {"type": "text", "value": "input_text_1", "col": 0, "row": 0, "wrap": True,},
+            {"type": "qr", "value": "sku", "col": 1, "row": 0,},
+            {"type": "text", "value": "sku", "col": 2, "row": 0, "rotate": 90,},
+        ],
+    },
+
+    "label_2_line_qr": {
+        "columns": [0.7, 0.3, 30],
+        "rows": [0.5, 0.5],
+        "cells": [
+            {"type": "text", "value": "input_text_1", "col": 0, "row": 0,},
+            {"type": "text", "value": "input_text_2", "col": 0, "row": 1,},
+            {"type": "qr", "value": "sku", "col": 1, "row": 0, "rowspan": 2,},
+            {"type": "text", "value": "sku", "col": 2, "row": 0, "rotate": 90, "rowspan": 2,},
         ],
     },
 }

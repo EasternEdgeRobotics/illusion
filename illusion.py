@@ -889,6 +889,7 @@ async def generate_barcode(interaction: discord.Interaction, sku: str):
     style=[
         app_commands.Choice(name="Barcode (Requires sku)", value="slim_barcode"),
         app_commands.Choice(name="Label Barcode (Requires sku and text_line_1)", value="label_barcode"),
+        app_commands.Choice(name="Label QR (Requires sku and text_line_1, optionally text_line_2)", value="label_qr"),
         app_commands.Choice(name="Label (Requires text_line_1, optionally text_line_2)", value="label"),
         app_commands.Choice(name="Cable Label (Requires text_line_1 and text_line_2)", value="cable_label"),
         app_commands.Choice(name="Cable Label Barcode (Requires sku and text_line_1)", value="cable_label_barcode"),
@@ -902,13 +903,13 @@ async def print_niimbot(interaction: discord.Interaction, style: app_commands.Ch
     style_name = style.value
 
     # Make sure we have all required values for each style
-    if text_line_1 == None and (style_name == "label" or style_name == "label_barcode" or style_name == "cable_label" or style_name == "cable_label_barcode"):
+    if text_line_1 == None and (style_name == "label" or style_name == "label_barcode" or style_name == "cable_label" or style_name == "cable_label_barcode" or style_name == "label_qr"):
         await interaction.response.send_message(f"Style: {style_name} requires text_line_1")
         return
     if text_line_2 == None and (style_name == "cable_label"):
         await interaction.response.send_message(f"Style: {style_name} requires text_line_2")
         return
-    if sku == None and (style_name == "slim_barcode" or style_name == "label_barcode" or style_name == "cable_label_barcode"):
+    if sku == None and (style_name == "slim_barcode" or style_name == "label_barcode" or style_name == "cable_label_barcode" or style_name == "label_qr"):
         await interaction.response.send_message(f"Style: {style_name} requires sku")
         return
 
@@ -920,8 +921,11 @@ async def print_niimbot(interaction: discord.Interaction, style: app_commands.Ch
         else:
             style_name = "label_2_line"
 
-    if style_name == "slim_barcode" or style_name == "label_barcode":
-         sku = illusion_helpers.clean_sku(sku)
+    if style_name == "label_qr":
+        if text_line_2 == None:
+            style_name = "label_1_line_qr"
+        else:
+            style_name = "label_2_line_qr"
 
     response_message = await command_handler.handler_print(style=style_name, sku=sku, text_line_1=text_line_1, text_line_2=text_line_2)
     await interaction.followup.send(response_message)
