@@ -355,34 +355,20 @@ class DB_Commands:
     
     async def handler_generate_barcode(self, sku):
         return labelmaker.render_label(style_name="classic_barcode", sku=sku, width=350, height=280, rotate=0)
-    
-    async def handler_niimbot_barcode(self, sku, text):
-        sku = illusion_helpers.clean_sku(sku)
-        serial_port = config["illusion"]["printer"]["niimbot"]["port"] 
 
-        if text == None:
-            bc_path = labelmaker.render_label(style_name="slim_barcode", sku=sku, width=320, height=96)
-        else:
-            bc_path = labelmaker.render_label(style_name="label_barcode", sku=sku, input_text_1=text, width=320, height=96)
+    async def handler_print(self, style, sku = None, text_line_1 = None, text_line_2 = None):
+        serial_port = config["illusion"]["printer"]["niimbot"]["port"]
+        if sku != None:
+            sku = illusion_helpers.clean_sku(sku)
 
-        result = illusion_helpers.niimbot_print(bc_path, serial_port, "d110")
-        return result
+        output = labelmaker.render_label(style_name=style, input_text_1=text_line_1, input_text_2=text_line_2, sku=sku, width=320, height=96)
+        return illusion_helpers.niimbot_print(output, serial_port, "d110")
 
     async def handler_bulk_print_niimbot(self, sku_lower, sku_upper):
         serial_port = config["illusion"]["printer"]["niimbot"]["port"] 
         
         response_message = await illusion_helpers.bulk_niimbot_print(serial_port, "d110", labelmaker, sku_lower, sku_upper)
         return response_message
-    
-    async def handler_print_label(self, line_1, line_2):
-        serial_port = config["illusion"]["printer"]["niimbot"]["port"]
-
-        if line_2 == None:
-            output = labelmaker.render_label(style_name="label_1_line", input_text_1=line_1, width=320, height=96)
-        else:
-            output = labelmaker.render_label(style_name="label_2_line", input_text_1=line_1, input_text_2=line_2, width=320, height=96)
-        
-        return illusion_helpers.niimbot_print(output, serial_port, "d110")
     
     async def handler_update_item(self, sku, updates: dict[str, object]):
         global inventory
@@ -651,9 +637,15 @@ async def terminal_loop():
                 response_message = await command_handler.handler_increase(parts[1])
         elif command == "print_barcode" and config["illusion"]["printer"]["niimbot"]["enabled"] and len(parts) >= 2:
             if len(parts) != 3:
-                response_message = await command_handler.handler_niimbot_barcode(parts[1], None)
+                style = "slim_barcode"
+                sku = parts[1]
+                line_1 = None
             else:
-                response_message = await command_handler.handler_niimbot_barcode(parts[1], parts[2])
+                style = "label_2_line"
+                sku = parts[1]
+                line_1 = parts[2]
+
+            response_message = await command_handler.handler_print(style=style, text_line_1=line_1, sku=sku)
         elif command == "printer_info" and config["illusion"]["printer"]["niimbot"]["enabled"] and len(parts) >= 1:
             serial_port = config["illusion"]["printer"]["niimbot"]["port"]
             response_message = illusion_helpers.niimbot_printer_info(serial_port)
@@ -666,19 +658,22 @@ async def terminal_loop():
                 if '"' in cleaned_text:
                     lines = cleaned_text.split('"')
                     if len(lines) >= 4:
-                        line_2 = lines[3]
                         line_1 = lines[1]
+                        line_2 = lines[3] # Why did i flip this order before????????? -PC
+                        style = "label_2_line"
                     else:
                         response_message = "Invalid Qoutes"
                 else:
                     line_1 = f"{parts[1]} {parts[2]}"
                     line_2 = None
+                    style = "label_1_line"
             else:
                 line_1 = parts[1]
+                style = "label_1_line"
                 line_2 = None
             
             if response_message == None:
-                response_message = await command_handler.handler_print_label(line_1, line_2)
+                response_message = await command_handler.handler_print(style=style, text_line_1=line_1, text_line_2=line_2)
         elif command == "bulk_print" and config["illusion"]["printer"]["niimbot"]["enabled"] and len(parts) == 3:
             response_message = await command_handler.handler_bulk_print_niimbot(parts[1], parts[2])
         elif command == "set" and len(parts) == 3:
@@ -888,17 +883,42 @@ async def generate_barcode(interaction: discord.Interaction, sku: str):
 
     await interaction.response.send_message(f"Barcode", file=file)
 
-@bot.tree.command(name="print_barcode", description="Print a barcode")
-@app_commands.describe(sku="Item Sku", text="Additional text")
-async def print_barcode(interaction: discord.Interaction, sku: str, text: str | None = None):
+@bot.tree.command(name="print", description="Print a label")
+@app_commands.describe(style="Label style", text_line_1="Text Line 1", text_line_2="Text Line 2", sku="Item Sku")
+@app_commands.choices(
+    style=[
+        app_commands.Choice(name="Barcode (Requires sku)", value="slim_barcode"),
+        app_commands.Choice(name="Label Barcode (Requires sku and text_line_1)", value="label_barcode"),
+        app_commands.Choice(name="Label (Requires text_line_1, optionally text_line_2)", value="label"),
+    ]
+)
+async def print_niimbot(interaction: discord.Interaction, style: app_commands.Choice[str], sku: str | None = None, text_line_1: str | None = None, text_line_2: str | None = None):
     if not config["illusion"]["printer"]["niimbot"]["enabled"]:
         await interaction.response.send_message(f"Printer not enabled")
         return
-    
+
+    style_name = style.value
+
+    # Make sure we have all required values for each style
+    if text_line_1 == None and (style_name == "label" or style_name == "label_barcode"):
+        await interaction.response.send_message(f"Style: {style_name} requires text_line_1")
+        return
+    if sku == None and (style_name == "slim_barcode" or style_name == "label_barcode"):
+        await interaction.response.send_message(f"Style: {style_name} requires sku")
+        return
+
     await interaction.response.defer()
-    sku = illusion_helpers.clean_sku(sku)
-    
-    response_message = await command_handler.handler_niimbot_barcode(sku, text)
+
+    if style_name == "label":
+        if text_line_2 == None:
+            style_name = "label_1_line"
+        else:
+            style_name = "label_2_line"
+
+    if style_name == "slim_barcode" or style_name == "label_barcode":
+         sku = illusion_helpers.clean_sku(sku)
+
+    response_message = await command_handler.handler_print(style=style_name, sku=sku, text_line_1=text_line_1, text_line_2=text_line_2)
     await interaction.followup.send(response_message)
 
 @bot.tree.command(name="print_image", description="Print an image")
@@ -930,17 +950,6 @@ async def print_image(interaction: discord.Interaction, image: discord.Attachmen
 
     serial_port = config["illusion"]["printer"]["niimbot"]["port"]
     response_message = illusion_helpers.niimbot_print(output_path, serial_port, "d110")
-    await interaction.followup.send(response_message)
-
-@bot.tree.command(name="print_label", description="Print a label")
-@app_commands.describe(line_1="Line 1", line_2="Line 2")
-async def print_label(interaction: discord.Interaction, line_1: str, line_2: str | None = None):
-    if not config["illusion"]["printer"]["niimbot"]["enabled"]:
-        await interaction.response.send_message(f"Printer not enabled")
-        return
-    await interaction.response.defer()
-    
-    response_message = await command_handler.handler_print_label(line_1, line_2)
     await interaction.followup.send(response_message)
 
 @bot.tree.command(name="printer_info", description="Get info about the printer")
