@@ -48,14 +48,15 @@ class DB_Commands:
     async def handler_add_item(self, item_name, priority, order_quantity, tracking_mode="KANBAN", quantity_on_hand=None, 
                                low_threshold=None, unit=None, decrease_amount=None, vendor_1 = None, link_1 = None, 
                                vendor_2 = None, link_2 = None, vendor_3 = None, link_3 = None, 
-                               vendor_4 = None, link_4 = None, vendor_5 = None, link_5 = None, digikey_part_number = None,): 
+                               vendor_4 = None, link_4 = None, vendor_5 = None, link_5 = None, 
+                               digikey_part_number = None, tags = None, notes = None,): 
         global inventory
 
         # Digikey part numbers are unique, so we need to make sure that there isnt an existing item with the sane dkpn
         if digikey_part_number != None:
             digikey_test = inventory.get_item_by_dkpn(digikey_part_number)
             if digikey_test != None:
-                return f"DKPN {digikey_part_number} is already in use by {digikey_test["SKU"]}"
+                return f"DKPN {digikey_part_number} is already in use by {digikey_test['SKU']}"
 
         new_item = {
             "NAME": item_name,
@@ -79,6 +80,8 @@ class DB_Commands:
             "VENDOR_5": vendor_5,
             "LOW": "FALSE",
             "DIGIKEY_PART_NUMBER": digikey_part_number,
+            "TAGS": tags,
+            "NOTES": notes,
         }
         
         new_sku = inventory.add_item(new_item)
@@ -178,6 +181,8 @@ class DB_Commands:
             "DECREASE_AMOUNT",
             "ORDER_QUANTITY",
             "LOW",
+            "NOTES",
+            "TAGS",
         ]
         if discord:
             return illusion_helpers.make_embed(results, exclude=exclude)
@@ -378,7 +383,7 @@ class DB_Commands:
             return f"Invalid sku: {sku}"
         
         # Automatically adds a digikey link if a digikey link was added
-        if updates["DIGIKEY_PART_NUMBER"] != None:
+        if updates.get("DIGIKEY_PART_NUMBER") is not None:
             digikey_link = f"https://www.digikey.ca/en/products/result?keywords={updates['DIGIKEY_PART_NUMBER']}"
             inventory.add_vendor(sku, "Digikey", digikey_link)
 
@@ -437,11 +442,88 @@ class DB_Commands:
             "VENDOR_1": "DigiKey",
             "LINK_1": f"https://www.digikey.ca/en/products/result?keywords={dkpn}",
             "LOW": "FALSE",
+            "TAGS": "digikey",
+            "NOTES": None,
         }
 
         new_sku = inventory.add_item(new_item)
         inventory.save()
         return f"New item {new_sku} created from {dkpn} with {quantity} on hand"
+
+    async def handler_get_tags(self, discord=False):
+        global inventory
+
+        tags = inventory.get_tags()
+
+        if not tags:
+            return "No tags found."
+
+        if discord:
+            return illusion_helpers.make_embed(tags)
+        else:
+            return illusion_helpers.make_table(tags)
+
+    async def handler_search_tag(self, tag, discord=False):
+        global inventory
+
+        results = inventory.get_items_by_tag(tag)
+
+        if not results:
+            return f"No items found with tag: {tag}"
+
+        exclude = [
+            "LINK_1",
+            "VENDOR_1",
+            "LINK_2",
+            "VENDOR_2",
+            "LINK_3",
+            "VENDOR_3",
+            "LINK_4",
+            "VENDOR_4",
+            "LINK_5",
+            "VENDOR_5",
+            "PRIORITY",
+            "LOW_THREAD_ID",
+            "TRACKING_MODE",
+            "LOW_THRESHOLD",
+            "UNIT",
+            "DECREASE_AMOUNT",
+            "ORDER_QUANTITY",
+            "LOW",
+            "NOTES",
+        ]
+
+        if discord:
+            return illusion_helpers.make_embed(results, exclude=exclude)
+        else:
+            return illusion_helpers.make_table(results, exclude=exclude)
+
+    async def handler_add_tag(self, sku: str, tag: str):
+        global inventory
+
+        sku = illusion_helpers.clean_sku(sku)
+        tag = tag.strip()
+
+        if not tag:
+            return "Tag cannot be empty."
+
+        if "," in tag:
+            return "Tag cannot contain commas."
+
+        existing_tags = inventory.get_item_tags(sku)
+
+        if existing_tags is None:
+            return f"Invalid sku: {sku}"
+
+        existing_keys = {existing_tag.casefold() for existing_tag in existing_tags}
+
+        if tag.casefold() in existing_keys:
+            return f"{sku} already has tag: {tag}"
+
+        inventory.add_tag(sku, tag)
+        inventory.save()
+
+        return f"Added tag `{tag}` to {sku}"
 
     async def handler_uptime(self):
         def format(uptime):
@@ -508,6 +590,16 @@ class DB_Commands:
                 "COMMAND": "search",
                 "USAGE": "search <item name>",
                 "DESCRIPTION": "Search for items",
+            },
+            {
+                "COMMAND": "get_tags",
+                "USAGE": "get_tags",
+                "DESCRIPTION": "List all item tags",
+            },
+            {
+                "COMMAND": "add_tag",
+                "USAGE": "add_tag <sku> <tag>",
+                "DESCRIPTION": "Add a tag to an item",
             },
             {
                 "COMMAND": "increase",
@@ -612,7 +704,11 @@ async def terminal_loop():
                         print(f"\033[38;2;230;222;208m{hat_lines[i].ljust(hat_width + gap)}\033[0m")
             
             response_message = ""
-            
+
+        elif command == "get_tags" and len(parts) >= 1:
+            response_message = await command_handler.handler_get_tags()
+        elif command == "add_tag" and len(parts) == 3:
+            response_message = await command_handler.handler_add_tag(parts[1], parts[2])
         elif parts[0].startswith("EER-") and len(parts) >= 1: # Basic bar code scanner support
             response_message = await command_handler.handler_decrease(parts[0])
         elif text.startswith("[)>") or (text.isdigit() and len(text) > 8): # Digikey data matrix
@@ -785,16 +881,18 @@ async def delete(interaction: discord.Interaction, sku: str):
                        vendor_3="Source 3 for Item", link_3="Source 3 Purchase Link",
                        vendor_4="Source 4 for Item", link_4="Source 4 Purchase Link",
                        vendor_5="Source 5 for Item", link_5="Source 5 Purchase Link",
+                       tags="Comma-separated tags", notes="Notes about this item",
                        )
 
 async def add_item(interaction: discord.Interaction, item_name: str, priority: int, 
-                   quantity: float, order_quantity: float, low_threshold: float, unit: str, digikey_part_number: str | None = None,
+                   quantity: float, order_quantity: float, low_threshold: float, unit: str, 
+                   digikey_part_number: str | None = None, tags: str | None = None, notes: str | None = None,
                    vendor_1: str | None = None, link_1: str | None = None, vendor_2: str | None = None, link_2: str | None = None, 
                    vendor_3: str | None = None, link_3: str | None = None, vendor_4: str | None = None, 
                    link_4: str | None = None, vendor_5: str | None = None, link_5: str | None = None):
 
     response_message = await command_handler.handler_add_item(item_name, priority, order_quantity, "QUANTITY", quantity, low_threshold, unit, "1", vendor_1, link_1, 
-                                                              vendor_2, link_2, vendor_3, link_3, vendor_4, link_4, vendor_5, link_5, digikey_part_number,)
+                                                              vendor_2, link_2, vendor_3, link_3, vendor_4, link_4, vendor_5, link_5, digikey_part_number, tags, notes,)
 
     await interaction.response.send_message(response_message)
 
@@ -807,15 +905,17 @@ async def add_item(interaction: discord.Interaction, item_name: str, priority: i
                        vendor_3="Source 3 for Item", link_3="Source 3 Purchase Link",
                        vendor_4="Source 4 for Item", link_4="Source 4 Purchase Link",
                        vendor_5="Source 5 for Item", link_5="Source 5 Purchase Link",
+                       tags="Comma-separated tags", notes="Notes about this item",
                        )
 
-async def add_kanban(interaction: discord.Interaction, item_name: str, priority: int, order_quantity: float, digikey_part_number: str | None = None,
+async def add_kanban(interaction: discord.Interaction, item_name: str, priority: int, order_quantity: float, 
+                     digikey_part_number: str | None = None, tags: str | None = None, notes: str | None = None,
                    vendor_1: str | None = None, link_1: str | None = None, vendor_2: str | None = None, link_2: str | None = None, 
                    vendor_3: str | None = None, link_3: str | None = None, vendor_4: str | None = None, 
                    link_4: str | None = None, vendor_5: str | None = None, link_5: str | None = None):
 
     response_message = await command_handler.handler_add_item(item_name, priority, order_quantity, "KANBAN", None, None, None, None, vendor_1, link_1, 
-                                                              vendor_2, link_2, vendor_3, link_3, vendor_4, link_4, vendor_5, link_5, digikey_part_number,)
+                                                              vendor_2, link_2, vendor_3, link_3, vendor_4, link_4, vendor_5, link_5, digikey_part_number, tags, notes,)
 
     await interaction.response.send_message(response_message)
 
@@ -829,17 +929,19 @@ async def add_kanban(interaction: discord.Interaction, item_name: str, priority:
                        vendor_3="Source 3 for Item", link_3="Source 3 Purchase Link",
                        vendor_4="Source 4 for Item", link_4="Source 4 Purchase Link",
                        vendor_5="Source 5 for Item", link_5="Source 5 Purchase Link",
+                       tags="Comma-separated tags", notes="Notes about this item",
                        )
 
 async def add_hybrid(interaction: discord.Interaction, item_name: str, priority: int, 
-                   quantity: float, order_quantity: float, low_threshold: float, unit: str, decrease_amount: float, digikey_part_number: str | None = None,
+                   quantity: float, order_quantity: float, low_threshold: float, unit: str, decrease_amount: float, 
+                   digikey_part_number: str | None = None, tags: str | None = None, notes: str | None = None,
                    vendor_1: str | None = None, link_1: str | None = None, vendor_2: str | None = None, link_2: str | None = None, 
                    vendor_3: str | None = None, link_3: str | None = None, vendor_4: str | None = None, 
                    link_4: str | None = None, vendor_5: str | None = None, link_5: str | None = None):
 
     response_message = await command_handler.handler_add_item(item_name, priority, order_quantity, "HYBRID", 
                                                               quantity, low_threshold, unit, decrease_amount, vendor_1, link_1, 
-                                                              vendor_2, link_2, vendor_3, link_3, vendor_4, link_4, vendor_5, link_5, digikey_part_number,)
+                                                              vendor_2, link_2, vendor_3, link_3, vendor_4, link_4, vendor_5, link_5, digikey_part_number, tags, notes,)
 
     await interaction.response.send_message(response_message)
 
@@ -872,6 +974,39 @@ async def search(interaction: discord.Interaction, name: str):
     response_message = await command_handler.handler_search(name, discord=True)
 
     await interaction.followup.send(embed=response_message)
+
+@bot.tree.command(name="search_tag", description="Search inventory by tag")
+@app_commands.describe(tag="Tag to search for")
+async def search_tag(interaction: discord.Interaction, tag: str):
+    await interaction.response.defer()
+
+    response_message = await command_handler.handler_search_tag(
+        tag,
+        discord=True,
+    )
+
+    if isinstance(response_message, discord.Embed):
+        await interaction.followup.send(embed=response_message)
+    else:
+        await interaction.followup.send(response_message)
+
+
+@bot.tree.command(name="get_tags", description="List all item tags")
+async def get_tags(interaction: discord.Interaction):
+    await interaction.response.defer()
+
+    response_message = await command_handler.handler_get_tags(discord=True)
+
+    if isinstance(response_message, discord.Embed):
+        await interaction.followup.send(embed=response_message)
+    else:
+        await interaction.followup.send(response_message)
+
+@bot.tree.command(name="add_tag", description="Add a tag to an item")
+@app_commands.describe(sku="Item SKU", tag="Tag to add")
+async def add_tag(interaction: discord.Interaction, sku: str, tag: str):
+    response_message = await command_handler.handler_add_tag(sku, tag)
+    await interaction.response.send_message(response_message)
 
 @bot.tree.command(name="generate_barcode", description="Generate a barcode")
 @app_commands.describe(sku="Item Sku")
@@ -983,11 +1118,13 @@ async def printer_info(interaction: discord.Interaction):
                        vendor_3="Source 3 for Item", link_3="Source 3 Purchase Link",
                        vendor_4="Source 4 for Item", link_4="Source 4 Purchase Link",
                        vendor_5="Source 5 for Item", link_5="Source 5 Purchase Link",
+                       tags="Comma-separated tags", notes="Notes about this item",
                        )
 
 async def update_item(interaction: discord.Interaction, sku: str, 
                       item_name: str | None = None, priority: str | None = None, quantity: str | None = None, order_quantity: str | None = None, 
-                      low_threshold: str | None = None, unit: str | None = None, decrease_amount: str | None = None, digikey_part_number: str | None = None,
+                      low_threshold: str | None = None, unit: str | None = None, decrease_amount: str | None = None, 
+                      digikey_part_number: str | None = None, tags: str | None = None, notes: str | None = None,
                       vendor_1: str | None = None, link_1: str | None = None, vendor_2: str | None = None, link_2: str | None = None, 
                       vendor_3: str | None = None, link_3: str | None = None, vendor_4: str | None = None, 
                       link_4: str | None = None, vendor_5: str | None = None, link_5: str | None = None):
@@ -1013,7 +1150,9 @@ async def update_item(interaction: discord.Interaction, sku: str,
             "LINK_5": link_5,
             "VENDOR_5": vendor_5,
             "LOW": None,
-            "DIGIKEY_PART_NUMBER": digikey_part_number
+            "DIGIKEY_PART_NUMBER": digikey_part_number,
+            "NOTES": notes,
+            "TAGS": tags,
         }
             
     response_message = await command_handler.handler_update_item(sku, updates)
