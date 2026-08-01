@@ -321,6 +321,9 @@ def make_embed(data, exclude=None, field_names=None):
 
             lines.append(f"**{friendly_name(column)}:** {value}")
 
+        # Best attempt at seperators
+        lines.append("‎")
+
         embed.add_field(
             name=f"Result {index}",
             value="\n".join(lines),
