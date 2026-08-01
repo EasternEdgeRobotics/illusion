@@ -238,7 +238,7 @@ def make_embed(data, exclude=None, field_names=None):
     missing = "N/A"
     title = "Results:"
     description = None
-    color = discord.Color.pink()
+    colour = discord.Colour.from_rgb(r=192, g=140, b=149)
     inline = False
 
     if exclude is None:
@@ -256,7 +256,7 @@ def make_embed(data, exclude=None, field_names=None):
         return discord.Embed(
             title=title or "No Results",
             description=description or "No data found.",
-            color=color,
+            color=colour,
         )
 
     def friendly_name(field):
@@ -265,7 +265,7 @@ def make_embed(data, exclude=None, field_names=None):
     embed = discord.Embed(
         title=title,
         description=description,
-        color=color,
+        color=colour,
     )
 
     # Vertical Embed
