@@ -5,6 +5,8 @@ import os
 
 from barcode import Code128
 from barcode.writer import ImageWriter
+import qrcode
+from qrcode.constants import ERROR_CORRECT_L
 from PIL import Image, ImageDraw, ImageFont
 
 LABEL_STYLES = {
@@ -52,6 +54,46 @@ LABEL_STYLES = {
             {"type": "text", "value": "sku", "col": 0, "row": 1,},
         ],
     },
+
+    "cable_label": {
+        "columns": [0.3, 0.4, 0.3],
+        "rows": [1],
+        "cells": [
+            {"type": "text", "value": "input_text_1", "col": 0, "row": 0, "rotate": 270, "wrap": True,},
+            {"type": "text", "value": "input_text_2", "col": 2, "row": 0, "rotate": 90, "wrap": True,},
+        ],
+    },
+
+    "cable_label_qr": {
+        "columns": [0.4, 0.3, 0.3, 30],
+        "rows": [1],
+        "cells": [
+            {"type": "text", "value": "input_text_1", "col": 0, "row": 0, "rotate": 270, "wrap": True,},
+            {"type": "qr", "value": "sku", "col": 2, "row": 0,},
+            {"type": "text", "value": "sku", "col": 3, "row": 0, "rotate": 90,},
+        ],
+    },
+
+    "label_1_line_qr": {
+        "columns": [0.7, 0.3, 30],
+        "rows": [1],
+        "cells": [
+            {"type": "text", "value": "input_text_1", "col": 0, "row": 0, "wrap": True,},
+            {"type": "qr", "value": "sku", "col": 1, "row": 0,},
+            {"type": "text", "value": "sku", "col": 2, "row": 0, "rotate": 90,},
+        ],
+    },
+
+    "label_2_line_qr": {
+        "columns": [0.7, 0.3, 30],
+        "rows": [0.5, 0.5],
+        "cells": [
+            {"type": "text", "value": "input_text_1", "col": 0, "row": 0,},
+            {"type": "text", "value": "input_text_2", "col": 0, "row": 1,},
+            {"type": "qr", "value": "sku", "col": 1, "row": 0, "rowspan": 2,},
+            {"type": "text", "value": "sku", "col": 2, "row": 0, "rotate": 90, "rowspan": 2,},
+        ],
+    },
 }
 
 class LabelMaker:    
@@ -64,13 +106,13 @@ class LabelMaker:
         # niimbot d110 specific stuff
         self._dpi = 203
         self._px_per_mm = self._dpi / 25.4
-
-    def _text(self, text, width, height) -> Image.Image:
-        temp_image = Image.new("RGB", [width, height])
+    
+    def _text(self, text, width, height, wrap=False, line_spacing=0.15,) -> Image.Image:
+        temp_image = Image.new("RGB", [width, height], "white")
         draw = ImageDraw.Draw(temp_image)
 
-        def measure_text(font):
-            bbox = draw.textbbox((0, 0), text, font=font)
+        def text_size(value, font):
+            bbox = draw.textbbox((0, 0), value, font=font)
             left, top, right, bottom = bbox
 
             return {
@@ -79,40 +121,125 @@ class LabelMaker:
                 "height": bottom - top,
             }
 
-        def font_fits(font_size):
+        def break_long_word(word, font, max_width):
+            chunks = []
+            current = ""
+
+            for char in word:
+                candidate = current + char
+
+                if text_size(candidate, font)["width"] <= max_width:
+                    current = candidate
+                else:
+                    if current:
+                        chunks.append(current)
+
+                    current = char
+
+            if current:
+                chunks.append(current)
+
+            return chunks
+
+        def wrap_text(value, font, max_width):
+            if not wrap:
+                return value.splitlines() or [""]
+
+            lines = []
+
+            for paragraph in value.splitlines() or [""]:
+                words = paragraph.split()
+
+                if not words:
+                    lines.append("")
+                    continue
+
+                current_line = ""
+
+                for word in words:
+                    if current_line:
+                        candidate = f"{current_line} {word}"
+                    else:
+                        candidate = word
+
+                    if text_size(candidate, font)["width"] <= max_width:
+                        current_line = candidate
+                        continue
+
+                    if current_line:
+                        lines.append(current_line)
+                        current_line = ""
+
+                    if text_size(word, font)["width"] <= max_width:
+                        current_line = word
+                    else:
+                        chunks = break_long_word(word, font, max_width)
+
+                        if chunks:
+                            lines.extend(chunks[:-1])
+                            current_line = chunks[-1]
+
+                if current_line:
+                    lines.append(current_line)
+
+            return lines
+
+        def measure_layout(font_size):
             selected_font = self._load_font(font_size)
-            box = measure_text(selected_font)
+            spacing = int(font_size * line_spacing)
+            lines = wrap_text(text, selected_font, width)
+            block = "\n".join(lines)
 
-            return box["width"] <= width and box["height"] <= height
+            bbox = draw.multiline_textbbox(
+                (0, 0),
+                block,
+                font=selected_font,
+                spacing=spacing,
+                align="center",
+            )
 
-        # Binary search for the largest font size that fits
+            left, top, right, bottom = bbox
+
+            return {
+                "font": selected_font,
+                "font_size": font_size,
+                "spacing": spacing,
+                "lines": lines,
+                "block": block,
+                "bbox": bbox,
+                "width": right - left,
+                "height": bottom - top,
+            }
+
+        def font_fits(font_size):
+            layout = measure_layout(font_size)
+
+            return layout["width"] <= width and layout["height"] <= height
+
         low = self._min_font_size
         high = self._max_font_size
         best_size = self._min_font_size
 
         while low <= high:
             mid = (low + high) // 2
-    
+
             if font_fits(mid):
                 best_size = mid
                 low = mid + 1
             else:
                 high = mid - 1
 
-        selected_font = self._load_font(best_size)
-        box = measure_text(selected_font)
+        layout = measure_layout(best_size)
 
         image = Image.new("RGB", [width, height], "white")
         draw = ImageDraw.Draw(image)
 
-        left, top, right, bottom = box["bbox"]
-        text_width = box["width"]
-        text_height = box["height"]
+        left, top, right, bottom = layout["bbox"]
 
-        x = (width - text_width) / 2 - left
-        y = (height - text_height) / 2 - top
+        x = (width - layout["width"]) / 2 - left
+        y = (height - layout["height"]) / 2 - top
 
-        draw.text((x, y), text, font=selected_font, fill="black")
+        draw.multiline_text((x, y), layout["block"], font=layout["font"], fill="black", spacing=layout["spacing"], align="center",)
 
         return image
     
@@ -150,6 +277,30 @@ class LabelMaker:
         image = Image.open(buffer).convert("RGB")
 
         return image.resize((width, height), Image.Resampling.NEAREST)
+
+    def _qr(self, text, width, height) -> Image.Image:
+        qr = qrcode.QRCode(version=None, error_correction=ERROR_CORRECT_L, box_size=10, border=1,)
+
+        qr.add_data(text)
+        qr.make(fit=True)
+
+        qr_image = qr.make_image(fill_color="black", back_color="white",).convert("RGB")
+
+        size = max(1, min(width, height))
+
+        qr_image = qr_image.resize(
+            (size, size),
+            Image.Resampling.NEAREST,
+        )
+
+        image = Image.new("RGB", (width, height), "white")
+
+        x = (width - size) // 2
+        y = (height - size) // 2
+
+        image.paste(qr_image, (x, y))
+
+        return image
 
     def _load_font(self, font_size: int) -> ImageFont.ImageFont:
         if self._font is not None and self._font != "":
@@ -228,12 +379,17 @@ class LabelMaker:
             value = values[value_key]
 
             if cell["type"] == "text":
+                wrap = cell.get("wrap", False)
                 if cell.get("rotate") in [90, 270]:
-                    image = self._text(value, padded_h, padded_w)
+                    image = self._text(value, padded_h, padded_w, wrap=wrap)
                 else:
-                    image = self._text(value, padded_w, padded_h)
+                    image = self._text(value, padded_w, padded_h, wrap=wrap)
             elif cell["type"] == "barcode":
                 image = self._barcode(value, padded_w, padded_h)
+            elif cell["type"] == "qr":
+                image = self._qr(value, padded_w, padded_h)
+            else:
+                raise ValueError(f"Unsupported label cell type: {cell['type']}")
 
             if cell.get("rotate"):
                 image = image.rotate(cell["rotate"], expand=True)

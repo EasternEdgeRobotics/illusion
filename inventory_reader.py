@@ -19,6 +19,7 @@ class SpreadsheetManager:
                                 "TRACKING_MODE", "QUANTITY_ON_HAND", "LOW_THRESHOLD", "UNIT", "DECREASE_AMOUNT",
                                 "LINK_1", "VENDOR_1", "LINK_2", "VENDOR_2", "LINK_3", "VENDOR_3",
                                 "LINK_4", "VENDOR_4", "LINK_5", "VENDOR_5", "DIGIKEY_PART_NUMBER",
+                                "TAGS", "NOTES",
         ]
 
         self.item_fields = {"SKU", "NAME", "PRIORITY", "ORDER_QUANTITY", "LOW",}
@@ -65,6 +66,18 @@ class SpreadsheetManager:
                     WHERE digikey_part_number IS NOT NULL
                 """
             )
+
+        # 1.3.0 migration
+        if "tags" not in existing_columns:
+            self.connection.execute(
+                "ALTER TABLE items ADD COLUMN tags TEXT"
+            )
+        
+        if "notes" not in existing_columns:
+            self.connection.execute(
+                "ALTER TABLE items ADD COLUMN notes TEXT"
+            )
+
             
     def _create_tables(self) -> None:
         with self.lock:
@@ -83,6 +96,9 @@ class SpreadsheetManager:
                     low_threshold REAL,
                     unit TEXT,
                     decrease_amount REAL NOT NULL DEFAULT 1.0,
+
+                    tags TEXT,
+                    notes TEXT,
 
                     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -223,6 +239,8 @@ class SpreadsheetManager:
             "DECREASE_AMOUNT": row["decrease_amount"],
             "LOW_THREAD_ID": row["low_thread_id"],
             "DIGIKEY_PART_NUMBER": row["digikey_part_number"],
+            "TAGS": row["tags"],
+            "NOTES": row["notes"],
         }
 
         for vendor_number in range(1, 6):
@@ -269,11 +287,108 @@ class SpreadsheetManager:
             .replace("_", "\\_")
         )
 
+    def _split_tags(self, value: Any) -> list[str]:
+        if value is None:
+            return []
+
+        return [tag.strip() for tag in str(value).split(",") if tag.strip()]
+
+    def _join_tags(self, tags: list[str]) -> str:
+        return ", ".join(tags)
+
+    def get_tags(self) -> list[dict[str, Any]]:
+        with self.lock:
+            rows = self.connection.execute(
+                """
+                SELECT tags
+                FROM items
+                WHERE tags IS NOT NULL
+                AND TRIM(tags) != ''
+                """
+            ).fetchall()
+
+        counts: dict[str, int] = {}
+        display_names: dict[str, str] = {}
+
+        for row in rows:
+            for tag in self._split_tags(row["tags"]):
+                key = tag.casefold()
+
+                counts[key] = counts.get(key, 0) + 1
+                display_names.setdefault(key, tag)
+
+        return [
+            {
+                "TAG": display_names[key],
+                "COUNT": counts[key],
+            }
+            for key in sorted(display_names)
+        ]
+
+    def get_items_by_tag(self, tag_query: str) -> list[dict[str, Any]]:
+        tag_query = tag_query.strip().casefold()
+
+        if not tag_query:
+            return []
+
+        with self.lock:
+            rows = self.connection.execute(
+                """
+                SELECT
+                    sku,
+                    name,
+                    priority,
+                    order_quantity,
+                    low,
+                    tracking_mode,
+                    quantity_on_hand,
+                    low_threshold,
+                    unit,
+                    decrease_amount,
+                    low_thread_id,
+                    digikey_part_number,
+                    tags,
+                    notes
+                FROM items
+                WHERE tags IS NOT NULL
+                ORDER BY name COLLATE NOCASE
+                """
+            ).fetchall()
+
+        results = []
+
+        for row in rows:
+            item_tags = [
+                tag.casefold()
+                for tag in self._split_tags(row["tags"])
+            ]
+
+            if tag_query in item_tags:
+                results.append(self._row_to_dict(row))
+
+        return results
+
+    def get_item_tags(self, sku: str) -> list[str] | None:
+        with self.lock:
+            row = self.connection.execute(
+                """
+                SELECT tags
+                FROM items
+                WHERE sku = ?
+                """,
+                (sku,),
+            ).fetchone()
+
+            if row is None:
+                return None
+
+            return self._split_tags(row["tags"])
+
     def read_all(self) -> list[dict[str, Any]]:
         with self.lock:
             rows = self.connection.execute(
                 """
-                SELECT sku, name, priority, order_quantity, low, tracking_mode, quantity_on_hand, low_threshold, unit, decrease_amount, low_thread_id, digikey_part_number
+                SELECT sku, name, priority, order_quantity, low, tracking_mode, quantity_on_hand, low_threshold, unit, decrease_amount, low_thread_id, digikey_part_number, tags, notes
                 FROM items
                 ORDER BY sku
                 """
@@ -288,7 +403,7 @@ class SpreadsheetManager:
         with self.lock:
             row = self.connection.execute(
                 """
-                SELECT sku, name, priority, order_quantity, low, tracking_mode, quantity_on_hand, low_threshold, unit, decrease_amount, low_thread_id, digikey_part_number
+                SELECT sku, name, priority, order_quantity, low, tracking_mode, quantity_on_hand, low_threshold, unit, decrease_amount, low_thread_id, digikey_part_number, tags, notes
                 FROM items
                 WHERE sku = ?
                 """,
@@ -323,6 +438,8 @@ class SpreadsheetManager:
             )
 
             digikey_part_number = item_data.get("DIGIKEY_PART_NUMBER")
+            tags = item_data.get("TAGS")
+            notes = item_data.get("NOTES")
 
             if not name:
                 raise ValueError("NAME is required.")
@@ -340,9 +457,11 @@ class SpreadsheetManager:
                     low_threshold,
                     unit,
                     decrease_amount, 
-                    digikey_part_number
+                    digikey_part_number,
+                    tags,
+                    notes
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     new_sku,
@@ -355,7 +474,9 @@ class SpreadsheetManager:
                     low_threshold,
                     unit,
                     decrease_amount,
-                    digikey_part_number
+                    digikey_part_number,
+                    tags,
+                    notes
                 ),
             )
 
@@ -400,7 +521,7 @@ class SpreadsheetManager:
                 if header not in self.default_headers:
                     raise ValueError(f"Header '{header}' does not exist.")
 
-                if header in {"NAME", "PRIORITY", "ORDER_QUANTITY", "LOW", "TRACKING_MODE", "QUANTITY_ON_HAND", "LOW_THRESHOLD", "UNIT", "DECREASE_AMOUNT", "LOW_THREAD_ID", "DIGIKEY_PART_NUMBER"}:
+                if header in {"NAME", "PRIORITY", "ORDER_QUANTITY", "LOW", "TRACKING_MODE", "QUANTITY_ON_HAND", "LOW_THRESHOLD", "UNIT", "DECREASE_AMOUNT", "LOW_THREAD_ID", "DIGIKEY_PART_NUMBER", "TAGS", "NOTES"}:
                     item_updates[header] = value
                     continue
 
@@ -426,6 +547,8 @@ class SpreadsheetManager:
                     "DECREASE_AMOUNT": "decrease_amount",
                     "LOW_THREAD_ID": "low_thread_id",
                     "DIGIKEY_PART_NUMBER": "digikey_part_number",
+                    "TAGS": "tags",
+                    "NOTES": "notes",
                 }
 
 
@@ -738,6 +861,54 @@ class SpreadsheetManager:
                     return True
 
             return False
+
+    def add_tag(self, sku: str, tag: str) -> bool:
+        with self.lock:
+            if not self.validate_sku(sku):
+                return False
+
+            tag = str(tag).strip()
+
+            if not tag:
+                return False
+
+            if "," in tag:
+                raise ValueError("Tags cannot contain commas.")
+
+            row = self.connection.execute(
+                """
+                SELECT tags
+                FROM items
+                WHERE sku = ?
+                """,
+                (sku,),
+            ).fetchone()
+
+            if row is None:
+                return False
+
+            tags = self._split_tags(row["tags"])
+            existing_keys = {existing_tag.casefold() for existing_tag in tags}
+
+            if tag.casefold() in existing_keys:
+                return True
+
+            tags.append(tag)
+
+            self.connection.execute(
+                """
+                UPDATE items
+                SET tags = ?
+                WHERE sku = ?
+                """,
+                (
+                    self._join_tags(tags),
+                    sku,
+                ),
+            )
+
+            self.connection.commit()
+            return True
         
     def search_items(self, name_query: str, limit: int = 10) -> list[dict[str, Any]]:
         name_query = name_query.strip()
@@ -753,21 +924,25 @@ class SpreadsheetManager:
         with self.lock:
             rows = self.connection.execute(
                 """
-                SELECT sku, name, priority, order_quantity, low, tracking_mode, quantity_on_hand, low_threshold, unit, decrease_amount, low_thread_id, digikey_part_number
+                SELECT sku, name, priority, order_quantity, low, tracking_mode, quantity_on_hand, low_threshold, unit, decrease_amount, low_thread_id, digikey_part_number, tags, notes
                 FROM items
                 WHERE LOWER(name) LIKE LOWER(?) ESCAPE '\\'
+                OR LOWER(COALESCE(tags, '')) LIKE LOWER(?) ESCAPE '\\'
                 ORDER BY
                     CASE
                         WHEN LOWER(name) = LOWER(?) THEN 0
                         WHEN LOWER(name) LIKE LOWER(?) ESCAPE '\\' THEN 1
-                        ELSE 2
+                        WHEN LOWER(COALESCE(tags, '')) LIKE LOWER(?) ESCAPE '\\' THEN 2
+                        ELSE 3
                     END,
                     name COLLATE NOCASE
                 LIMIT ?
                 """,
                 (
                     contains_pattern,
+                    contains_pattern,
                     name_query,
+                    prefix_pattern,
                     prefix_pattern,
                     limit,
                 ),

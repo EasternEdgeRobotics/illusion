@@ -233,6 +233,105 @@ def make_table(data, exclude=None, field_names=None):
 
     return "\n".join([header, separator] + table_rows)
 
+
+def make_embed(data, exclude=None, field_names=None):
+    missing = "N/A"
+    title = "Results:"
+    description = None
+    colour = discord.Colour.from_rgb(r=192, g=140, b=149) #C08C95
+    inline = False
+
+    if exclude is None:
+        exclude = [""]
+
+    if field_names is None:
+        field_names = FIELD_NAMES
+
+    if isinstance(data, dict):
+        rows = [data]
+    else:
+        rows = data
+
+    if not rows:
+        return discord.Embed(
+            title=title or "No Results",
+            description=description or "No data found.",
+            color=colour,
+        )
+
+    def friendly_name(field):
+        return field_names.get(field, field)
+
+    embed = discord.Embed(
+        title=title,
+        description=description,
+        color=colour,
+    )
+
+    # Vertical Embed
+    # Used when there is only one row.
+    if len(rows) == 1:
+        row = rows[0]
+
+        added_fields = 0
+
+        for field in row:
+            if field in exclude:
+                continue
+
+            value = row.get(field, missing)
+
+            if value is None or value == "":
+                value = missing
+
+            embed.add_field(
+                name=friendly_name(field),
+                value=str(value),
+                inline=inline,
+            )
+
+            added_fields += 1
+
+        if added_fields == 0:
+            embed.description = embed.description or "No displayable fields."
+
+        return embed
+
+    # Horizontal/List Embed
+    # Used when there are multiple rows.
+    columns = []
+
+    for row in rows:
+        for key in row:
+            if key not in columns and key not in exclude:
+                columns.append(key)
+
+    if not columns:
+        embed.description = embed.description or "No displayable fields."
+        return embed
+
+    for index, row in enumerate(rows, start=1):
+        lines = []
+
+        for column in columns:
+            value = row.get(column, missing)
+
+            if value is None or value == "":
+                value = missing
+
+            lines.append(f"**{friendly_name(column)}:** {value}")
+
+        # Best attempt at seperators
+        lines.append("‎")
+
+        embed.add_field(
+            name=f"Result {index}",
+            value="\n".join(lines),
+            inline=False,
+        )
+
+    return embed
+
 def niimbot_print(img, addr, model):
     try:
         transport = SerialTransport(port=addr)
