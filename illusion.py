@@ -442,7 +442,7 @@ class DB_Commands:
         # New part: create a QUANTITY-tracked item pre-filled from DigiKey
         new_item = {
             "NAME": description or dkpn,
-            "PRIORITY": "NORMAL",
+            "PRIORITY": 5,
             "ORDER_QUANTITY": None,
             "TRACKING_MODE": "QUANTITY",
             "QUANTITY_ON_HAND": quantity,
