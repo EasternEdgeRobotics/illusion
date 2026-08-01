@@ -106,7 +106,7 @@ class DB_Commands:
         
         return response_message
     
-    async def handler_info(self, sku, hide_ext=True):
+    async def handler_info(self, sku, hide_ext=True, discord=False):
         global inventory
 
         sku = illusion_helpers.clean_sku(sku)
@@ -120,8 +120,11 @@ class DB_Commands:
                     exclude.append("QUANTITY_ON_HAND")
             else:
                 exclude = []
-            
-            response_message = illusion_helpers.make_table(item, exclude)
+
+            if discord:
+                response_message = illusion_helpers.make_embed(item, exclude)
+            else:
+                response_message = illusion_helpers.make_table(item, exclude)
         else:
             response_message = f"Invalid sku: {sku}"
         
@@ -148,7 +151,7 @@ class DB_Commands:
         
         return response_message
 
-    async def handler_search(self, name: str):
+    async def handler_search(self, name: str, discord=False):
         global inventory
 
         results = inventory.search_items(name, limit=10)
@@ -176,8 +179,10 @@ class DB_Commands:
             "ORDER_QUANTITY",
             "LOW",
         ]
-
-        return illusion_helpers.make_table(results, exclude=exclude)
+        if discord:
+            return illusion_helpers.make_embed(results, exclude=exclude)
+        else:
+            return illusion_helpers.make_table(results, exclude=exclude)
     
     async def handler_decrease(self, sku, amount=None):
         global inventory
@@ -754,18 +759,14 @@ async def increase(interaction: discord.Interaction, sku: str, amount: str | Non
 @app_commands.describe(sku="Item Sku", hide_ext="Show or hide extra values")
 async def info(interaction: discord.Interaction, sku: str, hide_ext: bool = True):
     await interaction.response.defer()
-    response_message = await command_handler.handler_info(sku, hide_ext)
-
-    if response_message.startswith("Invalid sku"):
-        await interaction.followup.send(response_message)
-    else:
-        cleaned_sku = illusion_helpers.clean_sku(sku)
-        item = inventory.get_item(cleaned_sku)
-
-        if len(response_message) <= 2000:
-            await interaction.followup.send(f"```{response_message}```", view=illusion_helpers.make_vendor_buttons(item),)
-        else:
-            await interaction.followup.send(f"I didnt feel like handling info lookups with > 2000 chars, if thix happens from a real item, please ping me -PC")
+    cleaned_sku = illusion_helpers.clean_sku(sku)
+    if not inventory.validate_sku(cleaned_sku):
+        await interaction.followup.send("Invalid sku")
+        return
+    
+    response_message = await command_handler.handler_info(sku, hide_ext, discord=True)
+    item = inventory.get_item(cleaned_sku)
+    await interaction.followup.send(embed=response_message, view=illusion_helpers.make_vendor_buttons(item),)
 
 @bot.tree.command(name="delete", description="Delete an item")
 @app_commands.describe(sku="Item Sku")
@@ -867,15 +868,9 @@ async def add_hybrid(interaction: discord.Interaction, digikey_part_number: str,
 @app_commands.describe(name="Item name")
 async def search(interaction: discord.Interaction, name: str):
     await interaction.response.defer()
-    response_message = await command_handler.handler_search(name)
+    response_message = await command_handler.handler_search(name, discord=True)
 
-    if response_message.startswith("No items found"):
-        await interaction.followup.send(response_message)
-    else:
-        if len(response_message) <= 2000:
-            await interaction.followup.send(f"```{response_message}```")
-        else:
-            await interaction.followup.send(f"I didnt feel like handling searches with > 2000 chars, if thix happens from a real search, please ping me -PC")
+    await interaction.followup.send(embed=response_message)
 
 @bot.tree.command(name="generate_barcode", description="Generate a barcode")
 @app_commands.describe(sku="Item Sku")
