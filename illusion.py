@@ -30,7 +30,7 @@ with pyproject_path.open("rb") as f:
 illusion_version = pyproject["project"]["version"]
 intents = discord.Intents.default()
 
-bot = commands.Bot(command_prefix="!", intents=intents)
+bot = commands.Bot(command_prefix="!", intents=intents, activity=discord.Game(name=f"illusion {illusion_version}"), status=discord.Status.online,)
 
 boot_time = round(time.time() * 1000)
 
