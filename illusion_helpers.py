@@ -238,7 +238,7 @@ def make_embed(data, exclude=None, field_names=None):
     missing = "N/A"
     title = "Results:"
     description = None
-    colour = discord.Colour.from_rgb(r=192, g=140, b=149)
+    colour = discord.Colour.from_rgb(r=192, g=140, b=149) #C08C95
     inline = False
 
     if exclude is None:

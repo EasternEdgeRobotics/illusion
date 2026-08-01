@@ -615,9 +615,15 @@ async def terminal_loop():
 
             for i in range(len(hat_lines)):
                 if len(text_lines) > i:
-                    print(f"{hat_lines[i].ljust(hat_width + gap)}{text_lines[i]}")
+                    if i != 2:
+                        print(f"\033[38;2;192;140;149m{hat_lines[i].ljust(hat_width + gap)}\033[0m{text_lines[i]}")
+                    else:
+                        print(f"\033[38;2;230;222;208m{hat_lines[i].ljust(hat_width + gap)}\033[0m{text_lines[i]}")
                 else:
-                    print(f"{hat_lines[i].ljust(hat_width + gap)}")
+                    if i != 2:
+                        print(f"\033[38;2;192;140;149m{hat_lines[i].ljust(hat_width + gap)}\033[0m")
+                    else:
+                        print(f"\033[38;2;230;222;208m{hat_lines[i].ljust(hat_width + gap)}\033[0m")
             
             response_message = ""
             
