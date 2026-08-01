@@ -892,7 +892,7 @@ async def generate_barcode(interaction: discord.Interaction, sku: str):
         app_commands.Choice(name="Label QR (Requires sku and text_line_1, optionally text_line_2)", value="label_qr"),
         app_commands.Choice(name="Label (Requires text_line_1, optionally text_line_2)", value="label"),
         app_commands.Choice(name="Cable Label (Requires text_line_1 and text_line_2)", value="cable_label"),
-        app_commands.Choice(name="Cable Label Barcode (Requires sku and text_line_1)", value="cable_label_barcode"),
+        app_commands.Choice(name="Cable Label QR (Requires sku and text_line_1)", value="cable_label_qr"),
     ]
 )
 async def print_niimbot(interaction: discord.Interaction, style: app_commands.Choice[str], sku: str | None = None, text_line_1: str | None = None, text_line_2: str | None = None):
