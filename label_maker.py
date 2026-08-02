@@ -11,7 +11,7 @@ from PIL import Image, ImageDraw, ImageFont
 
 LABEL_STYLES = {
     "slim_barcode": {
-        "columns": [1, 30], # Values > 1 directly map to pixels
+        "columns": [1, 25], # Values > 1 directly map to pixels
         "rows": [1],
         "cells": [
             {"type": "barcode", "value": "sku", "col": 0,"row": 0,},
@@ -20,7 +20,7 @@ LABEL_STYLES = {
     },
 
     "label_barcode": {
-        "columns": [1, 30],
+        "columns": [1, 25],
         "rows": [0.5, 0.5],
         "cells": [
             {"type": "text", "value": "input_text_1", "col": 0, "row": 0,},
@@ -64,8 +64,19 @@ LABEL_STYLES = {
         ],
     },
 
+    "cable_label_sku": {
+        "columns": [25, 0.3, 0.4, 0.3, 25],
+        "rows": [1],
+        "cells": [
+            {"type": "text", "value": "sku", "col": 0, "row": 0, "rotate": 270,},
+            {"type": "text", "value": "input_text_1", "col": 1, "row": 0, "rotate": 270, "wrap": True,},
+            {"type": "text", "value": "input_text_2", "col": 3, "row": 0, "rotate": 90, "wrap": True,},
+            {"type": "text", "value": "sku", "col": 4, "row": 0, "rotate": 90,},
+        ],
+    },
+
     "cable_label_qr": {
-        "columns": [0.4, 0.3, 0.3, 30],
+        "columns": [0.4, 0.3, 0.3, 25],
         "rows": [1],
         "cells": [
             {"type": "text", "value": "input_text_1", "col": 0, "row": 0, "rotate": 270, "wrap": True,},
@@ -75,7 +86,7 @@ LABEL_STYLES = {
     },
 
     "label_1_line_qr": {
-        "columns": [0.7, 0.3, 30],
+        "columns": [0.7, 0.3, 25],
         "rows": [1],
         "cells": [
             {"type": "text", "value": "input_text_1", "col": 0, "row": 0, "wrap": True,},
@@ -85,7 +96,7 @@ LABEL_STYLES = {
     },
 
     "label_2_line_qr": {
-        "columns": [0.7, 0.3, 30],
+        "columns": [0.7, 0.3, 25],
         "rows": [0.5, 0.5],
         "cells": [
             {"type": "text", "value": "input_text_1", "col": 0, "row": 0,},
