@@ -1023,11 +1023,12 @@ async def generate_barcode(interaction: discord.Interaction, sku: str):
 @app_commands.choices(
     style=[
         app_commands.Choice(name="Barcode (Requires sku)", value="slim_barcode"),
-        app_commands.Choice(name="Label Barcode (Requires sku and text_line_1)", value="label_barcode"),
-        app_commands.Choice(name="Label QR (Requires sku and text_line_1, optionally text_line_2)", value="label_qr"),
+        app_commands.Choice(name="Label w/ Barcode (Requires sku and text_line_1)", value="label_barcode"),
+        app_commands.Choice(name="Label w/ QR Code (Requires sku and text_line_1, optionally text_line_2)", value="label_qr"),
         app_commands.Choice(name="Label (Requires text_line_1, optionally text_line_2)", value="label"),
         app_commands.Choice(name="Cable Label (Requires text_line_1, optionally text_line_2)", value="cable_label"),
-        app_commands.Choice(name="Cable Label QR (Requires sku and text_line_1)", value="cable_label_qr"),
+        app_commands.Choice(name="Cable Label w/ SKU (Requires text_line_1 and sku, optionally text_line_2)", value="cable_label_sku"),
+        app_commands.Choice(name="Cable Label w/ QR Code (Requires sku and text_line_1)", value="cable_label_qr"),
     ]
 )
 async def print_niimbot(interaction: discord.Interaction, style: app_commands.Choice[str], sku: str | None = None, 
@@ -1052,12 +1053,12 @@ async def print_niimbot(interaction: discord.Interaction, style: app_commands.Ch
         text_line_1 = item["NAME"]
 
     # Make sure we have all required values for each style
-    if text_line_1 == None and (style_name == "label" or style_name == "label_barcode" or style_name == "cable_label" or style_name == "cable_label_barcode" or style_name == "label_qr"):
+    if text_line_1 == None and (style_name == "label" or style_name == "label_barcode" or style_name == "cable_label" or style_name == "cable_label_barcode" or style_name == "label_qr" or style_name == "cable_label_sku"):
         await interaction.response.send_message(f"Style: {style_name} requires text_line_1")
         return
-    if text_line_2 == None and (style_name == "cable_label"):
+    if text_line_2 == None and (style_name == "cable_label" or style_name == "cable_label_sku"):
         text_line_2 = text_line_1
-    if sku == None and (style_name == "slim_barcode" or style_name == "label_barcode" or style_name == "cable_label_barcode" or style_name == "label_qr"):
+    if sku == None and (style_name == "slim_barcode" or style_name == "label_barcode" or style_name == "cable_label_barcode" or style_name == "label_qr" or style_name == "cable_label_sku"):
         await interaction.response.send_message(f"Style: {style_name} requires sku")
         return
 
