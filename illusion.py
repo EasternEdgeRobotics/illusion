@@ -1019,7 +1019,7 @@ async def generate_barcode(interaction: discord.Interaction, sku: str):
     await interaction.response.send_message(f"Barcode", file=file)
 
 @bot.tree.command(name="print", description="Print a label")
-@app_commands.describe(style="Label style", text_line_1="Text Line 1", text_line_2="Text Line 2", sku="Item Sku")
+@app_commands.describe(style="Label style", text_line_1="Text Line 1", text_line_2="Text Line 2", sku="Item Sku", get_text_from_sku="Get the item name from the provided sku",)
 @app_commands.choices(
     style=[
         app_commands.Choice(name="Barcode (Requires sku)", value="slim_barcode"),
@@ -1030,12 +1030,26 @@ async def generate_barcode(interaction: discord.Interaction, sku: str):
         app_commands.Choice(name="Cable Label QR (Requires sku and text_line_1)", value="cable_label_qr"),
     ]
 )
-async def print_niimbot(interaction: discord.Interaction, style: app_commands.Choice[str], sku: str | None = None, text_line_1: str | None = None, text_line_2: str | None = None):
+async def print_niimbot(interaction: discord.Interaction, style: app_commands.Choice[str], sku: str | None = None, 
+                        text_line_1: str | None = None, text_line_2: str | None = None, get_text_from_sku: bool = False,):
     if not config["illusion"]["printer"]["niimbot"]["enabled"]:
         await interaction.response.send_message(f"Printer not enabled")
         return
 
     style_name = style.value
+
+    if sku == None and get_text_from_sku == True:
+        await interaction.response.send_message(f"SKU required to get item text from sku")
+        return
+
+    if get_text_from_sku == True:
+        sku = illusion_helpers.clean_sku(sku)
+        if inventory.validate_sku(sku) == False:
+            await interaction.response.send_message(f"Invalid sku: {sku}")
+            return
+
+        item = inventory.get_item(sku)
+        text_line_1 = item["NAME"]
 
     # Make sure we have all required values for each style
     if text_line_1 == None and (style_name == "label" or style_name == "label_barcode" or style_name == "cable_label" or style_name == "cable_label_barcode" or style_name == "label_qr"):
