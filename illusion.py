@@ -442,7 +442,7 @@ class DB_Commands:
             "VENDOR_1": "DigiKey",
             "LINK_1": f"https://www.digikey.ca/en/products/result?keywords={dkpn}",
             "LOW": "FALSE",
-            "TAGS": "digikey",
+            "TAGS": "per_item_tracking, digikey_scan, digikey",
             "NOTES": None,
         }
 
@@ -863,7 +863,11 @@ async def info(interaction: discord.Interaction, sku: str, hide_ext: bool = True
     
     response_message = await command_handler.handler_info(sku, hide_ext, discord=True)
     item = inventory.get_item(cleaned_sku)
-    await interaction.followup.send(embed=response_message, view=illusion_helpers.make_vendor_buttons(item),)
+    view = illusion_helpers.make_vendor_buttons(item)
+    if view != None:
+        await interaction.followup.send(embed=response_message, view=view,)
+    else:
+        await interaction.followup.send(embed=response_message,)
 
 @bot.tree.command(name="delete", description="Delete an item")
 @app_commands.describe(sku="Item Sku")
@@ -891,6 +895,11 @@ async def add_item(interaction: discord.Interaction, item_name: str, priority: i
                    vendor_3: str | None = None, link_3: str | None = None, vendor_4: str | None = None, 
                    link_4: str | None = None, vendor_5: str | None = None, link_5: str | None = None):
 
+    if tags != None:
+        tags = "per_item_tracking"
+    else:
+        tags = f"per_item_tracking, {tags}"
+
     response_message = await command_handler.handler_add_item(item_name, priority, order_quantity, "QUANTITY", quantity, low_threshold, unit, "1", vendor_1, link_1, 
                                                               vendor_2, link_2, vendor_3, link_3, vendor_4, link_4, vendor_5, link_5, digikey_part_number, tags, notes,)
 
@@ -913,6 +922,11 @@ async def add_kanban(interaction: discord.Interaction, item_name: str, priority:
                    vendor_1: str | None = None, link_1: str | None = None, vendor_2: str | None = None, link_2: str | None = None, 
                    vendor_3: str | None = None, link_3: str | None = None, vendor_4: str | None = None, 
                    link_4: str | None = None, vendor_5: str | None = None, link_5: str | None = None):
+
+    if tags != None:
+        tags = "kanban_tracking"
+    else:
+        tags = f"kanban_tracking, {tags}"
 
     response_message = await command_handler.handler_add_item(item_name, priority, order_quantity, "KANBAN", None, None, None, None, vendor_1, link_1, 
                                                               vendor_2, link_2, vendor_3, link_3, vendor_4, link_4, vendor_5, link_5, digikey_part_number, tags, notes,)
@@ -939,6 +953,11 @@ async def add_hybrid(interaction: discord.Interaction, item_name: str, priority:
                    vendor_3: str | None = None, link_3: str | None = None, vendor_4: str | None = None, 
                    link_4: str | None = None, vendor_5: str | None = None, link_5: str | None = None):
 
+    if tags != None:
+        tags = "hybrid_tracking"
+    else:
+        tags = f"hybrid_tracking, {tags}"
+
     response_message = await command_handler.handler_add_item(item_name, priority, order_quantity, "HYBRID", 
                                                               quantity, low_threshold, unit, decrease_amount, vendor_1, link_1, 
                                                               vendor_2, link_2, vendor_3, link_3, vendor_4, link_4, vendor_5, link_5, digikey_part_number, tags, notes,)
@@ -946,23 +965,28 @@ async def add_hybrid(interaction: discord.Interaction, item_name: str, priority:
     await interaction.response.send_message(response_message)
 
 @bot.tree.command(name="add_with_dkpn", description="Add item to inventory w/ per item tracking, getting info using a Digikey part number")
-@app_commands.describe(item_name="Item Name",
-                       priority="Item Priority, 1-10",
-                       order_quantity="Number of units to order when stock low", unit="Unit name", digikey_part_number="Digikey Part Number",
-                       quantity="Number of units on hand", low_threshold="Minimum Stock",
+@app_commands.describe(item_name="Item Name", priority="Item Priority, 1-10",
+                       order_quantity="Number of units to order when stock low", 
+                       unit="Unit name", digikey_part_number="Digikey Part Number",
+                       quantity="Number of units on hand", low_threshold="Minimum Stock", 
+                       tags="Comma-separated tags", notes="Notes about this item",
                        )
 
-async def add_hybrid(interaction: discord.Interaction, digikey_part_number: str, priority: int, 
-                   quantity: float, order_quantity: float, low_threshold: float, unit: str, item_name: str | None = None):
+async def add_with_dkpn(interaction: discord.Interaction, digikey_part_number: str, priority: int, 
+                   quantity: float, order_quantity: float, low_threshold: float, unit: str, item_name: str | None = None, tags: str | None = None, notes: str | None = None):
 
     dkpn_info = dk.lookup_part_number(digikey_part_number)
     if item_name == None:
         item_name = f"{dkpn_info["Product"]["Manufacturer"]["Name"]} {dkpn_info["Product"]["Description"]["ProductDescription"]}"
 
+    if tags != None:
+        tags = "per_item_tracking, digikey_dkpn"
+    else:
+        tags = f"per_item_tracking, digikey_dkpn, {tags}"
 
     response_message = await command_handler.handler_add_item(item_name, priority, order_quantity, "HYBRID", 
                                                               quantity, low_threshold, unit, 1, None, None, 
-                                                              None, None, None, None, None, None, None, None, digikey_part_number,)
+                                                              None, None, None, None, None, None, None, None, digikey_part_number, tags, notes,)
 
     await interaction.response.send_message(response_message)
 
