@@ -952,7 +952,7 @@ async def add_hybrid(interaction: discord.Interaction, item_name: str, priority:
                        quantity="Number of units on hand", low_threshold="Minimum Stock",
                        )
 
-async def add_hybrid(interaction: discord.Interaction, digikey_part_number: str, priority: int, 
+async def add_with_dkpn(interaction: discord.Interaction, digikey_part_number: str, priority: int, 
                    quantity: float, order_quantity: float, low_threshold: float, unit: str, item_name: str | None = None):
 
     dkpn_info = dk.lookup_part_number(digikey_part_number)
