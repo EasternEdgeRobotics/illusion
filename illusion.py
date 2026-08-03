@@ -863,7 +863,11 @@ async def info(interaction: discord.Interaction, sku: str, hide_ext: bool = True
     
     response_message = await command_handler.handler_info(sku, hide_ext, discord=True)
     item = inventory.get_item(cleaned_sku)
-    await interaction.followup.send(embed=response_message, view=illusion_helpers.make_vendor_buttons(item),)
+    view = illusion_helpers.make_vendor_buttons(item)
+    if view != None:
+        await interaction.followup.send(embed=response_message, view=view,)
+    else:
+        await interaction.followup.send(embed=response_message,)
 
 @bot.tree.command(name="delete", description="Delete an item")
 @app_commands.describe(sku="Item Sku")
