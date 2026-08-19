@@ -6,6 +6,9 @@ from PIL import Image, ImageDraw, ImageFont
 from niimprint import BluetoothTransport, PrinterClient, SerialTransport
 
 
+EMBED_COLOUR = discord.Colour.from_rgb(r=192, g=140, b=149) #C08C95
+ALERT_COLOUR = discord.Colour.from_rgb(r=176, g=74, b=74) #B04A4A
+
 FIELD_NAMES = {
     "SKU": "SKU",
     "NAME": "Name",
@@ -115,7 +118,9 @@ def clean_sku(sku):
         sku = "EER-" + ("0" * (6 - len(sku))) + sku
     return sku
 
-def make_table(data, exclude=None, field_names=None):
+def make_table(data, exclude=None, field_names=None, vertical=None):
+    # vertical=None lays a single row out as Field/Value and anything longer as
+    # columns, pass True or False to force one or the other
     missing = "N/A"
 
     if exclude is None:
@@ -136,7 +141,7 @@ def make_table(data, exclude=None, field_names=None):
         return field_names.get(field, field)
 
     # Vertical Table
-    if len(rows) == 1:
+    if vertical == True or (vertical == None and len(rows) == 1):
         row = rows[0]
 
         field_header = "Field"
@@ -234,12 +239,18 @@ def make_table(data, exclude=None, field_names=None):
     return "\n".join([header, separator] + table_rows)
 
 
-def make_embed(data, exclude=None, field_names=None):
+def make_embed(data, exclude=None, field_names=None, title=None, description=None, colour=None, row_name=None, vertical=None):
+    # vertical=None lays a single row out one field per column and anything longer
+    # as a field per row, pass True or False to force one or the other
+    # row_name names each of those fields after that column, instead of "Result 1"
     missing = "N/A"
-    title = "Results:"
-    description = None
-    colour = discord.Colour.from_rgb(r=192, g=140, b=149) #C08C95
     inline = False
+
+    if title == None:
+        title = "Results:"
+
+    if colour == None:
+        colour = EMBED_COLOUR
 
     if exclude is None:
         exclude = [""]
@@ -270,13 +281,13 @@ def make_embed(data, exclude=None, field_names=None):
 
     # Vertical Embed
     # Used when there is only one row.
-    if len(rows) == 1:
+    if vertical == True or (vertical == None and len(rows) == 1):
         row = rows[0]
 
         added_fields = 0
 
         for field in row:
-            if field in exclude:
+            if field in exclude or field == row_name:
                 continue
 
             value = row.get(field, missing)
@@ -303,7 +314,7 @@ def make_embed(data, exclude=None, field_names=None):
 
     for row in rows:
         for key in row:
-            if key not in columns and key not in exclude:
+            if key not in columns and key not in exclude and key != row_name:
                 columns.append(key)
 
     if not columns:
@@ -325,14 +336,37 @@ def make_embed(data, exclude=None, field_names=None):
         lines.append("‎")
 
         embed.add_field(
-            name=f"Result {index}",
+            name=row.get(row_name) if row_name else f"Result {index}",
             value="\n".join(lines),
             inline=False,
         )
 
     return embed
 
-def niimbot_print(img, addr, model):
+
+# Max printable width in pixels, per model
+PRINTER_MAX_WIDTH = {
+    "b1": 384,
+    "b18": 384,
+    "b21": 384,
+    "d11": 96,
+    "d110": 96,
+}
+
+
+class PrinterUnavailable(Exception):
+    """The printer cannot print right now (asleep, open, out of labels, unplugged...).
+
+    Anything raising this is worth pausing the print queue over, since retrying
+    will keep failing until a human does something about it.
+    """
+
+
+class LabelError(Exception):
+    """The label itself is bad, the printer is fine. Only this job should be dropped."""
+
+
+def connect_printer(addr):
     try:
         transport = SerialTransport(port=addr)
         printer = PrinterClient(transport)
@@ -343,108 +377,99 @@ def niimbot_print(img, addr, model):
         err = str(e)
 
         if "could not open port" in err:
-            return "Unable to print, printer is likely disconnected"
-        elif "AttributeError: 'NoneType' object has no attribute 'data'" in err:
-            return "Unable to print, printer is likely asleep"
+            raise PrinterUnavailable("printer is likely disconnected")
+        elif "has no attribute 'data'" in err:
+            raise PrinterUnavailable("printer is likely asleep")
         else:
-            return f"Unable to print, Unknown Error: {err}"
-    remaining_media = media_info["total_len"] - media_info["used_len"]
+            raise PrinterUnavailable(f"Unknown Error: {err}")
 
+    return printer, transport, heartbeat, media_info
+
+
+def close_printer(transport):
+    # SerialTransport has no close(), and we open a fresh one for every print,
+    # so reach in and close the port rather than leaking file descriptors.
+    try:
+        serial_port = getattr(transport, "_serial", None)
+
+        if serial_port is not None:
+            serial_port.close()
+    except Exception:
+        pass
+
+
+def media_remaining(media_info):
+    if media_info is None:
+        return None
+
+    return media_info["total_len"] - media_info["used_len"]
+
+
+def check_printer_ready(heartbeat, media_info):
     if heartbeat["closingstate"] == 0:
-        return "Unable to print, The printer seems to be open, please close it and try again."
-    if remaining_media == 0:
-        return "No labels left, please replace roll!"
-    
-    if model in ("b1", "b18", "b21"):
-        max_width = 384
-    elif model in ("d11", "d110"):
-        max_width = 96
+        raise PrinterUnavailable("the printer seems to be open, please close it and try again")
 
-    image = Image.open(img)
+    if media_info is None:
+        raise PrinterUnavailable("no labels detected, please load a roll")
 
-    if image.width > max_width:
-        return "Unable to print, image too wide"
-    
-    printer.print_image(image, density=3)
-    return f"Printing...\nif this is the first print after returning from sleep it may be blank."
+    if media_remaining(media_info) <= 0:
+        raise PrinterUnavailable("no labels left, please replace roll")
+
+
+def check_printer(addr):
+    """Connect, verify the printer is able to print, and report on the loaded roll."""
+    printer, transport, heartbeat, media_info = connect_printer(addr)
+
+    try:
+        check_printer_ready(heartbeat, media_info)
+    finally:
+        close_printer(transport)
+
+    return media_info
+
+
+def check_label(img, model):
+    max_width = PRINTER_MAX_WIDTH.get(model)
+
+    if max_width is None:
+        return
+
+    with Image.open(img) as image:
+        if image.width > max_width:
+            raise LabelError(f"image too wide, {image.width}px given, {max_width}px is the limit")
+
+
+def niimbot_print(img, addr, model, density=3):
+    """Print a single image. Blocking, so run it in a thread when called from the bot."""
+    printer, transport, heartbeat, media_info = connect_printer(addr)
+
+    try:
+        check_printer_ready(heartbeat, media_info)
+        check_label(img, model)
+
+        image = Image.open(img)
+
+        printer.print_image(image, density=density)
+    except (PrinterUnavailable, LabelError):
+        raise
+    except Exception as e:
+        # A failure mid print is a printer problem, so treat it like one
+        raise PrinterUnavailable(f"Unknown Error: {e}")
+    finally:
+        close_printer(transport)
+
 
 def niimbot_printer_info(addr):
     try:
-        transport = SerialTransport(port=addr)
-        printer = PrinterClient(transport)
+        printer, transport, heartbeat, media_info = connect_printer(addr)
+    except PrinterUnavailable as e:
+        return f"Unable to get info, {e}"
 
-        heartbeat = printer.heartbeat()
-        media_info = printer.get_rfid()
-    except Exception as e:
-        err = str(e)
+    close_printer(transport)
 
-        if "could not open port" in err:
-            return "Unable to get info, printer is likely disconnected"
-        elif "AttributeError: 'NoneType' object has no attribute 'data'" in err:
-            return "Unable to get info, printer is likely asleep"
-        else:
-            return f"Unable to get info, Unknown Error: {err}"
-        
     if media_info != None:
-        remaining_media = media_info["total_len"] - media_info["used_len"]
+        remaining_media = media_remaining(media_info)
 
         return f"Labels left: {remaining_media}/{media_info["total_len"]}\nBattery Level: {heartbeat["powerlevel"]}/4"
     else:
         return "Unable to get printer info, labels might not be loaded."
-
-async def bulk_niimbot_print(addr, model, label_maker, sku_lower, sku_upper):
-    try:
-        transport = SerialTransport(port=addr)
-        printer = PrinterClient(transport)
-
-        heartbeat = printer.heartbeat()
-        media_info = printer.get_rfid()
-    except Exception as e:
-        err = str(e)
-
-        if "could not open port" in err:
-            return "Unable to print, printer is likely disconnected"
-        elif "AttributeError: 'NoneType' object has no attribute 'data'" in err:
-            return "Unable to print, printer is likely asleep"
-        else:
-            return f"Unable to print, Unknown Error: {err}"
-        
-    remaining_media = media_info["total_len"] - media_info["used_len"]
-    total_prints = len(range(int(sku_lower), (int(sku_upper) + 1)))
-
-    if heartbeat["closingstate"] == 0:
-        return "Unable to print, The printer seems to be open, please close it and try again."
-    if remaining_media == 0:
-        return "No labels left, please replace roll!"
-
-    if total_prints > int(media_info["total_len"]):
-        return f"This exceeds the max amount of prints possible on a single roll.\nPlease split this into smaller jobs. \n{total_prints} requested, {media_info["total_len"]} possible"
-    elif total_prints > remaining_media:
-        return f"This exceeds the amounts of prints left on the current roll.\nPlease split this into smaller jobs. \n{total_prints} requested, {remaining_media} available"
-
-    
-    if model in ("b1", "b18", "b21"):
-        max_width = 384
-    elif model in ("d11", "d110"):
-        max_width = 96
-
-    images = {}
-
-    # Pre generate images
-    for i in range(int(sku_lower), (int(sku_upper) + 1)):
-        sku = clean_sku(i)
-        images[sku] = label_maker.render_label(style_name="barcode", width=320, height=96, rotate=90, output=f"barcode_{sku}", sku=sku)
-
-    for key, value in images.items():
-        image = Image.open(value)
-
-        if image.width > max_width:
-            return "Software Error: Unable to print, image too wide"
-    
-        printer.print_image(image, density=3)
-        print(f"{key}: Printing...")
-
-        # niimbot cant instantly take a new job, so we give it extra time between each one
-        await asyncio.sleep(1) 
-
-    return f"Finished"
