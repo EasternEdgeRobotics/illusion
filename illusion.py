@@ -895,7 +895,7 @@ async def add_item(interaction: discord.Interaction, item_name: str, priority: i
                    vendor_3: str | None = None, link_3: str | None = None, vendor_4: str | None = None, 
                    link_4: str | None = None, vendor_5: str | None = None, link_5: str | None = None):
 
-    if tags != None:
+    if tags == None:
         tags = "per_item_tracking"
     else:
         tags = f"per_item_tracking, {tags}"
@@ -923,7 +923,7 @@ async def add_kanban(interaction: discord.Interaction, item_name: str, priority:
                    vendor_3: str | None = None, link_3: str | None = None, vendor_4: str | None = None, 
                    link_4: str | None = None, vendor_5: str | None = None, link_5: str | None = None):
 
-    if tags != None:
+    if tags == None:
         tags = "kanban_tracking"
     else:
         tags = f"kanban_tracking, {tags}"
@@ -953,7 +953,7 @@ async def add_hybrid(interaction: discord.Interaction, item_name: str, priority:
                    vendor_3: str | None = None, link_3: str | None = None, vendor_4: str | None = None, 
                    link_4: str | None = None, vendor_5: str | None = None, link_5: str | None = None):
 
-    if tags != None:
+    if tags == None:
         tags = "hybrid_tracking"
     else:
         tags = f"hybrid_tracking, {tags}"
@@ -979,7 +979,7 @@ async def add_with_dkpn(interaction: discord.Interaction, digikey_part_number: s
     if item_name == None:
         item_name = f"{dkpn_info["Product"]["Manufacturer"]["Name"]} {dkpn_info["Product"]["Description"]["ProductDescription"]}"
 
-    if tags != None:
+    if tags == None:
         tags = "per_item_tracking, digikey_dkpn"
     else:
         tags = f"per_item_tracking, digikey_dkpn, {tags}"

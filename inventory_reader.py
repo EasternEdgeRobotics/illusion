@@ -43,6 +43,7 @@ class SpreadsheetManager:
             self.connection.execute("PRAGMA journal_mode = WAL")
             self.connection.execute("PRAGMA synchronous = NORMAL")
             self.connection.execute("PRAGMA busy_timeout = 5000")
+            
     def _migrate_items_table(self) -> None:
         existing_columns = {
             row["name"]
@@ -76,6 +77,34 @@ class SpreadsheetManager:
         if "notes" not in existing_columns:
             self.connection.execute(
                 "ALTER TABLE items ADD COLUMN notes TEXT"
+            )
+
+        # 1.3.X fix (1.4.0)
+        self._remove_literal_none_tags()
+
+    def _remove_literal_none_tags(self) -> None:
+        rows = self.connection.execute(
+            """
+            SELECT sku, tags
+            FROM items
+            WHERE tags LIKE '%None%'
+            """
+        ).fetchall()
+
+        for row in rows:
+            tags = self._split_tags(row["tags"])
+            cleaned = [tag for tag in tags if tag != "None"]
+
+            if len(cleaned) == len(tags):
+                continue
+
+            self.connection.execute(
+                """
+                UPDATE items
+                SET tags = ?
+                WHERE sku = ?
+                """,
+                (self._join_tags(cleaned) or None, row["sku"]),
             )
 
             
@@ -681,7 +710,9 @@ class SpreadsheetManager:
                     unit,
                     decrease_amount,
                     low_thread_id,
-                    digikey_part_number
+                    digikey_part_number,
+                    tags,
+                    notes
                 FROM items
                 WHERE sku = ?
                 """,
