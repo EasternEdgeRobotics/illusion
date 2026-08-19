@@ -13,6 +13,8 @@ from digikey_client import DigiKeyClient
 import time
 from datetime import timedelta
 from label_maker import LabelMaker
+import print_queue
+from print_queue import PrintQueue
 
 try:
     import readline
@@ -361,19 +363,89 @@ class DB_Commands:
     async def handler_generate_barcode(self, sku):
         return labelmaker.render_label(style_name="classic_barcode", sku=sku, width=350, height=280, rotate=0)
 
-    async def handler_print(self, style, sku = None, text_line_1 = None, text_line_2 = None):
-        serial_port = config["illusion"]["printer"]["niimbot"]["port"]
+    async def handler_print(self, style, sku = None, text_line_1 = None, text_line_2 = None, quantity = 1, notify = None, source = "terminal"):
         if sku != None:
             sku = illusion_helpers.clean_sku(sku)
 
-        output = labelmaker.render_label(style_name=style, input_text_1=text_line_1, input_text_2=text_line_2, sku=sku, width=320, height=96)
-        return illusion_helpers.niimbot_print(output, serial_port, "d110")
+        # Every job needs its own file, otherwise a label queued later would
+        # overwrite one still waiting to be printed
+        output = labelmaker.render_label(style_name=style, input_text_1=text_line_1, input_text_2=text_line_2, sku=sku, width=320, height=96, output=f"label_{time.time_ns()}")
 
-    async def handler_bulk_print_niimbot(self, sku_lower, sku_upper):
-        serial_port = config["illusion"]["printer"]["niimbot"]["port"] 
-        
-        response_message = await illusion_helpers.bulk_niimbot_print(serial_port, "d110", labelmaker, sku_lower, sku_upper)
+        if sku != None and text_line_1 != None:
+            description = f"{text_line_1} ({sku})"
+        elif sku != None:
+            description = sku
+        elif text_line_1 != None:
+            description = text_line_1
+        else:
+            description = style
+
+        job, response_message = printqueue.add(output, description[:60], copies=quantity, notify=notify, source=source)
         return response_message
+
+    async def handler_print_image(self, image_path, description, quantity = 1, notify = None, source = "terminal"):
+        job, response_message = printqueue.add(image_path, description[:60], copies=quantity, notify=notify, source=source)
+        return response_message
+
+    async def handler_bulk_print_niimbot(self, sku_lower, sku_upper, notify = None, source = "terminal"):
+        try:
+            lower = int(sku_lower)
+            upper = int(sku_upper)
+        except ValueError:
+            return "Bulk print needs two sku numbers, ex: bulk_print 1 20"
+
+        if upper < lower:
+            return f"{sku_lower} is higher than {sku_upper}"
+
+        total_prints = upper - lower + 1
+
+        # Warn about a roll that cant fit the job before printing any of it,
+        # the queue itself will stop if we run out part way through anyway
+        try:
+            media_info = await printqueue.printer_media()
+        except illusion_helpers.PrinterUnavailable as e:
+            return f"Unable to print, {e}"
+
+        remaining_media = illusion_helpers.media_remaining(media_info)
+
+        if total_prints > int(media_info["total_len"]):
+            return f"This exceeds the max amount of prints possible on a single roll.\nPlease split this into smaller jobs. \n{total_prints} requested, {media_info["total_len"]} possible"
+        elif total_prints > remaining_media:
+            return f"This exceeds the amounts of prints left on the current roll.\nPlease split this into smaller jobs. \n{total_prints} requested, {remaining_media} available"
+
+        pages = []
+
+        for number in range(lower, upper + 1):
+            sku = illusion_helpers.clean_sku(number)
+            pages.append(labelmaker.render_label(style_name="slim_barcode", width=320, height=96, output=f"barcode_{sku}", sku=sku))
+
+        description = f"barcodes {illusion_helpers.clean_sku(lower)} to {illusion_helpers.clean_sku(upper)}"
+
+        job, response_message = printqueue.add(pages, description, notify=notify, source=source)
+        return response_message
+
+    async def handler_printer_info(self):
+        return await printqueue.printer_info()
+
+    async def handler_print_queue(self, discord=False):
+        if discord:
+            return printqueue.status_embed()
+
+        return printqueue.status()
+
+    async def handler_print_resume(self):
+        return await printqueue.resume()
+
+    async def handler_print_clear(self):
+        return printqueue.clear()
+
+    async def handler_print_cancel(self, job_id):
+        try:
+            job_id = int(job_id)
+        except ValueError:
+            return f"Invalid job id: {job_id}"
+
+        return printqueue.cancel(job_id)
     
     async def handler_update_item(self, sku, updates: dict[str, object]):
         global inventory
@@ -641,10 +713,39 @@ class DB_Commands:
                         "USAGE": 'bulk_print [lower sku] [upper sku]',
                         "DESCRIPTION": "Print barcodes for a range of skus",
                     },
+                    {
+                        "COMMAND": "print_queue",
+                        "USAGE": "print_queue",
+                        "DESCRIPTION": "Show the print queue",
+                    },
+                    {
+                        "COMMAND": "print_resume",
+                        "USAGE": "print_resume",
+                        "DESCRIPTION": "Resume the print queue after fixing the printer",
+                    },
+                    {
+                        "COMMAND": "print_cancel",
+                        "USAGE": "print_cancel <job id>",
+                        "DESCRIPTION": "Cancel a queued print job",
+                    },
+                    {
+                        "COMMAND": "print_clear",
+                        "USAGE": "print_clear",
+                        "DESCRIPTION": "Clear every job from the print queue",
+                    },
                 ]
             )
 
         return f"\n<sku> required argument\n[amount] optional argument\n\n{illusion_helpers.make_table(command_list)}\n"
+
+def terminal_print(message):
+    # The input prompt has no trailing newline, so anything printed from the
+    # background lands on top of it, reprint it to keep the input line intact
+    print(f"\n{message}\n> ", end="", flush=True)
+
+async def terminal_notify(message, urgent=False, embed=None):
+    # embed is for discord, the terminal gets the same thing as plain text
+    terminal_print(message)
 
 async def terminal_loop():
     await bot.wait_until_ready()
@@ -741,10 +842,9 @@ async def terminal_loop():
                 sku = parts[1]
                 line_1 = parts[2]
 
-            response_message = await command_handler.handler_print(style=style, text_line_1=line_1, sku=sku)
+            response_message = await command_handler.handler_print(style=style, text_line_1=line_1, sku=sku, notify=terminal_notify)
         elif command == "printer_info" and config["illusion"]["printer"]["niimbot"]["enabled"] and len(parts) >= 1:
-            serial_port = config["illusion"]["printer"]["niimbot"]["port"]
-            response_message = illusion_helpers.niimbot_printer_info(serial_port)
+            response_message = await command_handler.handler_printer_info()
         elif command == "print_label" and config["illusion"]["printer"]["niimbot"]["enabled"] and len(parts) >= 2:
             # Awful, Awful, Awful
             # I hate this code
@@ -769,9 +869,17 @@ async def terminal_loop():
                 line_2 = None
             
             if response_message == None:
-                response_message = await command_handler.handler_print(style=style, text_line_1=line_1, text_line_2=line_2)
+                response_message = await command_handler.handler_print(style=style, text_line_1=line_1, text_line_2=line_2, notify=terminal_notify)
         elif command == "bulk_print" and config["illusion"]["printer"]["niimbot"]["enabled"] and len(parts) == 3:
-            response_message = await command_handler.handler_bulk_print_niimbot(parts[1], parts[2])
+            response_message = await command_handler.handler_bulk_print_niimbot(parts[1], parts[2], notify=terminal_notify)
+        elif command == "print_queue" and config["illusion"]["printer"]["niimbot"]["enabled"] and len(parts) >= 1:
+            response_message = await command_handler.handler_print_queue()
+        elif command == "print_resume" and config["illusion"]["printer"]["niimbot"]["enabled"] and len(parts) >= 1:
+            response_message = await command_handler.handler_print_resume()
+        elif command == "print_clear" and config["illusion"]["printer"]["niimbot"]["enabled"] and len(parts) >= 1:
+            response_message = await command_handler.handler_print_clear()
+        elif command == "print_cancel" and config["illusion"]["printer"]["niimbot"]["enabled"] and len(parts) >= 2:
+            response_message = await command_handler.handler_print_cancel(parts[1])
         elif command == "set" and len(parts) == 3:
             response_message = await command_handler.handler_set_stock(parts[1], parts[2])
         else:
@@ -895,7 +1003,7 @@ async def add_item(interaction: discord.Interaction, item_name: str, priority: i
                    vendor_3: str | None = None, link_3: str | None = None, vendor_4: str | None = None, 
                    link_4: str | None = None, vendor_5: str | None = None, link_5: str | None = None):
 
-    if tags != None:
+    if tags == None:
         tags = "per_item_tracking"
     else:
         tags = f"per_item_tracking, {tags}"
@@ -923,7 +1031,7 @@ async def add_kanban(interaction: discord.Interaction, item_name: str, priority:
                    vendor_3: str | None = None, link_3: str | None = None, vendor_4: str | None = None, 
                    link_4: str | None = None, vendor_5: str | None = None, link_5: str | None = None):
 
-    if tags != None:
+    if tags == None:
         tags = "kanban_tracking"
     else:
         tags = f"kanban_tracking, {tags}"
@@ -953,7 +1061,7 @@ async def add_hybrid(interaction: discord.Interaction, item_name: str, priority:
                    vendor_3: str | None = None, link_3: str | None = None, vendor_4: str | None = None, 
                    link_4: str | None = None, vendor_5: str | None = None, link_5: str | None = None):
 
-    if tags != None:
+    if tags == None:
         tags = "hybrid_tracking"
     else:
         tags = f"hybrid_tracking, {tags}"
@@ -979,7 +1087,7 @@ async def add_with_dkpn(interaction: discord.Interaction, digikey_part_number: s
     if item_name == None:
         item_name = f"{dkpn_info["Product"]["Manufacturer"]["Name"]} {dkpn_info["Product"]["Description"]["ProductDescription"]}"
 
-    if tags != None:
+    if tags == None:
         tags = "per_item_tracking, digikey_dkpn"
     else:
         tags = f"per_item_tracking, digikey_dkpn, {tags}"
@@ -1042,8 +1150,26 @@ async def generate_barcode(interaction: discord.Interaction, sku: str):
 
     await interaction.response.send_message(f"Barcode", file=file)
 
+def make_notifier(interaction: discord.Interaction):
+    """Print jobs finish long after the slash command is answered, so updates go to the channel."""
+    channel = interaction.channel
+    user = interaction.user
+
+    async def notify(message, urgent=False, embed=None):
+        if channel is None:
+            return
+
+        if embed == None:
+            await channel.send(f"{user.mention} {message}" if urgent else message)
+            return
+
+        # The mention has to sit outside the embed to actually ping
+        await channel.send(user.mention if urgent else None, embed=embed)
+
+    return notify
+
 @bot.tree.command(name="print", description="Print a label")
-@app_commands.describe(style="Label style", text_line_1="Text Line 1", text_line_2="Text Line 2", sku="Item Sku", get_text_from_sku="Get the item name from the provided sku",)
+@app_commands.describe(style="Label style", text_line_1="Text Line 1", text_line_2="Text Line 2", sku="Item Sku", get_text_from_sku="Get the item name from the provided sku", quantity="Number of copies to print",)
 @app_commands.choices(
     style=[
         app_commands.Choice(name="Barcode (Requires sku)", value="slim_barcode"),
@@ -1056,7 +1182,8 @@ async def generate_barcode(interaction: discord.Interaction, sku: str):
     ]
 )
 async def print_niimbot(interaction: discord.Interaction, style: app_commands.Choice[str], sku: str | None = None, 
-                        text_line_1: str | None = None, text_line_2: str | None = None, get_text_from_sku: bool = False,):
+                        text_line_1: str | None = None, text_line_2: str | None = None, get_text_from_sku: bool = False,
+                        quantity: app_commands.Range[int, 1, print_queue.MAX_COPIES] = 1,):
     if not config["illusion"]["printer"]["niimbot"]["enabled"]:
         await interaction.response.send_message(f"Printer not enabled")
         return
@@ -1100,12 +1227,14 @@ async def print_niimbot(interaction: discord.Interaction, style: app_commands.Ch
         else:
             style_name = "label_2_line_qr"
 
-    response_message = await command_handler.handler_print(style=style_name, sku=sku, text_line_1=text_line_1, text_line_2=text_line_2)
+    response_message = await command_handler.handler_print(style=style_name, sku=sku, text_line_1=text_line_1, text_line_2=text_line_2,
+                                                          quantity=quantity, notify=make_notifier(interaction), source=f"discord/{interaction.user.display_name}",)
     await interaction.followup.send(response_message)
 
 @bot.tree.command(name="print_image", description="Print an image")
-@app_commands.describe(image="Image to print", rotate="Degrees to rotate by")
-async def print_image(interaction: discord.Interaction, image: discord.Attachment, rotate: int = 0):
+@app_commands.describe(image="Image to print", rotate="Degrees to rotate by", quantity="Number of copies to print")
+async def print_image(interaction: discord.Interaction, image: discord.Attachment, rotate: int = 0,
+                      quantity: app_commands.Range[int, 1, print_queue.MAX_COPIES] = 1,):
     if not config["illusion"]["printer"]["niimbot"]["enabled"]:
         await interaction.response.send_message(f"Printer not enabled")
         return
@@ -1123,16 +1252,60 @@ async def print_image(interaction: discord.Interaction, image: discord.Attachmen
 
         os.makedirs("/tmp/illusion/imgs/", exist_ok=True)
 
+        # Prefixed with a timestamp so a queued image isnt overwritten by the next one
         output_path = os.path.join(
             "/tmp/illusion/imgs/",
-            f"resized_{image.filename}",
+            f"resized_{time.time_ns()}_{image.filename}",
         )
         
         resized.save(output_path)
 
-    serial_port = config["illusion"]["printer"]["niimbot"]["port"]
-    response_message = illusion_helpers.niimbot_print(output_path, serial_port, "d110")
+    response_message = await command_handler.handler_print_image(output_path, image.filename, quantity=quantity,
+                                                                notify=make_notifier(interaction), source=f"discord/{interaction.user.display_name}",)
     await interaction.followup.send(response_message)
+
+@bot.tree.command(name="print_queue", description="Show what the printer is working through")
+async def print_queue_status(interaction: discord.Interaction):
+    if not config["illusion"]["printer"]["niimbot"]["enabled"]:
+        await interaction.response.send_message(f"Printer not enabled")
+        return
+
+    response_message = await command_handler.handler_print_queue(discord=True)
+
+    if isinstance(response_message, discord.Embed):
+        await interaction.response.send_message(embed=response_message)
+    else:
+        await interaction.response.send_message(response_message)
+
+@bot.tree.command(name="print_resume", description="Resume the print queue after fixing the printer")
+async def print_resume(interaction: discord.Interaction):
+    if not config["illusion"]["printer"]["niimbot"]["enabled"]:
+        await interaction.response.send_message(f"Printer not enabled")
+        return
+
+    await interaction.response.defer()
+
+    response_message = await command_handler.handler_print_resume()
+    await interaction.followup.send(response_message)
+
+@bot.tree.command(name="print_cancel", description="Cancel a queued print job")
+@app_commands.describe(job_id="Job id from /print_queue")
+async def print_cancel(interaction: discord.Interaction, job_id: int):
+    if not config["illusion"]["printer"]["niimbot"]["enabled"]:
+        await interaction.response.send_message(f"Printer not enabled")
+        return
+
+    response_message = await command_handler.handler_print_cancel(job_id)
+    await interaction.response.send_message(response_message)
+
+@bot.tree.command(name="print_clear", description="Clear every job from the print queue")
+async def print_clear(interaction: discord.Interaction):
+    if not config["illusion"]["printer"]["niimbot"]["enabled"]:
+        await interaction.response.send_message(f"Printer not enabled")
+        return
+
+    response_message = await command_handler.handler_print_clear()
+    await interaction.response.send_message(response_message)
 
 @bot.tree.command(name="printer_info", description="Get info about the printer")
 async def printer_info(interaction: discord.Interaction):
@@ -1141,9 +1314,8 @@ async def printer_info(interaction: discord.Interaction):
         return
     
     await interaction.response.defer()
-    
-    serial_port = config["illusion"]["printer"]["niimbot"]["port"]
-    response_message = illusion_helpers.niimbot_printer_info(serial_port)
+
+    response_message = await command_handler.handler_printer_info()
     await interaction.followup.send(response_message)
 
 @bot.tree.command(name="update_item", description="Update an existing item")
@@ -1208,6 +1380,14 @@ async def graceful_exit(reason: str = "unknown"):
     shutdown_event.set()
 
     try:
+        if printqueue.pending_labels > 0:
+            print(f"Dropping {printqueue.pending_labels} label(s) still in the print queue")
+
+        await printqueue.stop()
+    except Exception as e:
+        print(f"Error stopping print queue: {e}")
+
+    try:
         inventory.save()
     except Exception as e:
         print(f"Error saving inventory: {e}")
@@ -1238,6 +1418,9 @@ async def setup_hook():
     install_signal_handlers()
     bot.loop.create_task(terminal_loop())
 
+    if config["illusion"]["printer"]["niimbot"]["enabled"]:
+        printqueue.start()
+
 with open("./config.yaml", "r") as file:
     config = yaml.safe_load(file)
 
@@ -1248,6 +1431,7 @@ FORUM_CHANNEL_ID = config["illusion"]["discord"]["fourm_id"]
 command_handler = DB_Commands()
 inventory = SpreadsheetManager(config["illusion"]["database_location"])
 labelmaker = LabelMaker(config["illusion"]["printer"]["niimbot"]["font_path"])
+printqueue = PrintQueue(config["illusion"]["printer"]["niimbot"]["port"], "d110", log=terminal_print)
 
 # Digikey support
 if config["illusion"]["digikey"]["enabled"] == True:
