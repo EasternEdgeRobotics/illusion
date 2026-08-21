@@ -225,16 +225,20 @@ name = "claws"
 version = "1.5.0"
 source = { editable = "packages/claws" }
 dependencies = [
+    { name = "fastapi" },
     { name = "illusion-core" },
     { name = "pyyaml" },
     { name = "requests" },
+    { name = "uvicorn", extra = ["standard"] },
 ]
 
 [package.metadata]
 requires-dist = [
+    { name = "fastapi", specifier = ">=0.115" },
     { name = "illusion-core", editable = "packages/illusion-core" },
     { name = "pyyaml", specifier = ">=6.0.3" },
     { name = "requests", specifier = ">=2.34.2" },
+    { name = "uvicorn", extras = ["standard"], specifier = ">=0.34" },
 ]
 
 [[package]]

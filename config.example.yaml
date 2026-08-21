@@ -4,7 +4,9 @@
 # first use.
 
 illusion:
-  database_location: ./inventory.db
+  claws:
+    url: http://127.0.0.1:8080   # tailnet address of the inventory service
+    token:                       # must match claws.yaml's token
   discord:
     token:            # Discord bot token
     server_id:        # Guild id
@@ -17,11 +19,3 @@ illusion:
   lipgloss:
     url: http://127.0.0.1:8081   # tailnet address of the print server
     token:                       # must match lipgloss.yaml's token
-  digikey:
-    enabled: true
-    client_id:        # DigiKey API client id
-    client_secret:    # DigiKey API client secret
-    tokens:
-      access_token:   # written by digikey_client, leave blank
-      refresh_token:  # written by digikey_client, leave blank
-      expires_at:     # written by digikey_client, leave blank

@@ -1,0 +1,16 @@
+# Copy to claws.yaml and fill in. claws.yaml is gitignored.
+# Runs on the NAS VM and owns the database.
+claws:
+  bind:
+    host: 127.0.0.1      # tailnet address in production
+    port: 8080
+  token:                 # shared bearer token, must match the frontend's config
+  database_location: /var/lib/claws/inventory.db
+  digikey:
+    enabled: false
+    client_id:
+    client_secret:
+    tokens:
+      access_token:      # written by digikey_client, leave blank
+      refresh_token:     # written by digikey_client, leave blank
+      expires_at:        # written by digikey_client, leave blank

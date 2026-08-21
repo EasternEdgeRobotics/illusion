@@ -1,7 +1,6 @@
 import discord
 from discord import app_commands
 from discord.ext import commands
-from claws.inventory_reader import SpreadsheetManager
 import asyncio
 from importlib.metadata import version
 from illusion_core import config as illusion_config
@@ -12,10 +11,9 @@ from PIL import Image
 import collections
 import functools
 import os, io, platform, signal
-from claws.digikey_client import DigiKeyClient
 import time
 from datetime import timedelta
-from illusion_core.clients import LipglossClient, ServiceUnavailable
+from illusion_core.clients import ClawsClient, LipglossClient, ServiceUnavailable
 
 try:
     import readline
@@ -50,29 +48,29 @@ def reports_service_errors(handler):
     """Turn an unreachable service into a message instead of a traceback.
 
     Fail fast by design: nothing is buffered locally for a retry later, the
-    caller is simply told plainly that the print server could not be reached.
+    caller is simply told plainly which service could not be reached. A scan
+    made during an outage is not recorded, and says so.
     """
     @functools.wraps(handler)
     async def wrapper(*args, **kwargs):
         try:
             return await handler(*args, **kwargs)
         except ServiceUnavailable as e:
-            return f"Unable to reach the print server.\n{e}"
+            return f"Unable to reach {e.service or 'a service'}.\n{e}"
 
     return wrapper
 
 
 class DB_Commands:
+    @reports_service_errors
     async def handler_add_item(self, item_name, priority, order_quantity, tracking_mode="KANBAN", quantity_on_hand=None, 
                                low_threshold=None, unit=None, decrease_amount=None, vendor_1 = None, link_1 = None, 
                                vendor_2 = None, link_2 = None, vendor_3 = None, link_3 = None, 
                                vendor_4 = None, link_4 = None, vendor_5 = None, link_5 = None, 
                                digikey_part_number = None, tags = None, notes = None,): 
-        global inventory
-
         # Digikey part numbers are unique, so we need to make sure that there isnt an existing item with the sane dkpn
         if digikey_part_number != None:
-            digikey_test = inventory.get_item_by_dkpn(digikey_part_number)
+            digikey_test = await claws.item_by_dkpn(digikey_part_number)
             if digikey_test != None:
                 return f"DKPN {digikey_part_number} is already in use by {digikey_test['SKU']}"
 
@@ -102,37 +100,31 @@ class DB_Commands:
             "NOTES": notes,
         }
         
-        new_sku = inventory.add_item(new_item)
-        inventory.save()
+        new_sku = await claws.add_item(new_item)
 
         if digikey_part_number != None:
             digikey_link = f"https://www.digikey.ca/en/products/result?keywords={digikey_part_number}"
-            inventory.add_vendor(new_sku, "Digikey", digikey_link)
-
-        inventory.save()
+            await claws.add_vendor(new_sku, "Digikey", digikey_link)
 
         response_message = f"Added {item_name} to inventory, SKU: {new_sku}"
         return response_message
     
+    @reports_service_errors
     async def handler_delete_item(self, sku):
-        global inventory
         sku = illusion_helpers.clean_sku(sku)
-        if inventory.validate_sku(sku):
-            item = inventory.get_item(sku)
-            inventory.delete_item(sku)
-            inventory.save()
-            response_message = f"Removed {item['NAME']} from inventory, SKU: {sku}"
-        else:
-            response_message = f"Invalid sku: {sku}"
-        
-        return response_message
-    
-    async def handler_info(self, sku, hide_ext=True, discord=False):
-        global inventory
+        item = await claws.delete_item(sku)
 
+        if item is None:
+            return f"Invalid sku: {sku}"
+
+        return f"Removed {item['NAME']} from inventory, SKU: {sku}"
+    
+    @reports_service_errors
+    async def handler_info(self, sku, hide_ext=True, discord=False):
         sku = illusion_helpers.clean_sku(sku)
-        if inventory.validate_sku(sku):
-            item = inventory.get_item(sku)
+        item = await claws.get_item(sku)
+
+        if item is not None:
             if hide_ext:
                 exclude = ["PRIORITY", "TRACKING_MODE", "LOW_THRESHOLD", "UNIT", "LOW_THREAD_ID", "DECREASE_AMOUNT", 
                             "VENDOR_1", "LINK_1", "VENDOR_2", "LINK_2", "VENDOR_3", "LINK_3", "VENDOR_4", "LINK_4", "VENDOR_5", "LINK_5"]
@@ -151,31 +143,24 @@ class DB_Commands:
         
         return response_message
     
+    @reports_service_errors
     async def handler_resolve(self, sku, archive_thread=False):
-        global inventory
-
         sku = illusion_helpers.clean_sku(sku)
-        if inventory.validate_sku(sku):
-            item = inventory.get_item(sku)
+        result = await claws.resolve(sku)
 
-            if item["LOW"] == True:
-                inventory.update_item(sku, {"LOW": "FALSE"})
-                inventory.save()
-                response_message = f"{sku} no longer marked as low"
-                if archive_thread:
-                    thread_message = await self.archive_low_thread(sku)
-                    response_message += f"\n{thread_message}"
-            else:
-                response_message = f"{sku} not marked as low"
-        else:
-            response_message = f"Invalid sku: {sku}"
-        
-        return response_message
+        if result is None:
+            return f"Invalid sku: {sku}"
 
+        if not result["changed"]:
+            return f"{sku} not marked as low"
+
+        # The thread is archived by whoever is listening for item.resolved, so
+        # archive_thread no longer gates anything here
+        return f"{sku} no longer marked as low"
+
+    @reports_service_errors
     async def handler_search(self, name: str, discord=False):
-        global inventory
-
-        results = inventory.search_items(name, limit=10)
+        results = await claws.search(name, limit=10)
 
         if not results:
             return f"No items found matching: {name}"
@@ -207,63 +192,55 @@ class DB_Commands:
         else:
             return illusion_helpers.make_table(results, exclude=exclude)
     
+    @reports_service_errors
     async def handler_decrease(self, sku, amount=None):
-        global inventory
-
         sku = illusion_helpers.clean_sku(sku)
 
         if amount != None and float(amount) <= 0:
             return f"Quantity must be greater than 0"
-        elif inventory.validate_sku(sku):
-            result = inventory.decrease_item(sku, amount)
-            item = result["item"]
 
-            thread_name = None
+        result = await claws.decrease(sku, float(amount) if amount != None else None)
 
-            if result["low_changed"]:
-                thread_name = await self.create_low_thread(sku)
-
-            if item["TRACKING_MODE"] == "KANBAN":
-                if result["low_changed"]:
-                    return f"{sku} marked as low, thread: {thread_name} created"
-
-                return f"{sku} already marked as low"
-
-            unit = item["UNIT"] or "units"
-
-            response_message = (
-                f"{sku} decreased by "
-                f"{illusion_helpers.format_quantity(result['decrease_amount'])} {unit}: "
-                f"{illusion_helpers.format_quantity(result['old_quantity'])} -> "
-                f"{illusion_helpers.format_quantity(result['new_quantity'])}"
-            )
-
-            if result["low_changed"]:
-                response_message += f"\nLow threshold reached, thread: {thread_name} created"
-            elif item["LOW"]:
-                response_message += "\nItem is already marked as low."
-
-            inventory.save()
-        else:
-            response_message = f"Invalid sku: {sku}"
-
-        return response_message
-    
-    async def handler_increase(self, sku, amount=1):
-        global inventory
-
-        sku = illusion_helpers.clean_sku(sku)
-
-        if not inventory.validate_sku(sku):
+        if result is None:
             return f"Invalid sku: {sku}"
 
-        old_item = inventory.get_item(sku)
-        was_low = old_item["LOW"]
-        old_thread_id = old_item["LOW_THREAD_ID"]
+        item = result["item"]
+        went_low = result["transition"] == "low"
 
-        item = inventory.increase_item(sku, float(amount))
-        inventory.save()
+        if item["TRACKING_MODE"] == "KANBAN":
+            if went_low:
+                return f"{sku} marked as low, a low-stock thread is on its way"
 
+            return f"{sku} already marked as low"
+
+        unit = item["UNIT"] or "units"
+
+        response_message = (
+            f"{sku} decreased by "
+            f"{illusion_helpers.format_quantity(result['decrease_amount'])} {unit}: "
+            f"{illusion_helpers.format_quantity(result['old_quantity'])} -> "
+            f"{illusion_helpers.format_quantity(result['new_quantity'])}"
+        )
+
+        # The thread is created by whoever is listening for item.low, which may
+        # not be this process, so its name is not available to report here
+        if went_low:
+            response_message += "\nLow threshold reached, a low-stock thread is on its way"
+        elif item["LOW"]:
+            response_message += "\nItem is already marked as low."
+
+        return response_message
+
+    @reports_service_errors
+    async def handler_increase(self, sku, amount=1):
+        sku = illusion_helpers.clean_sku(sku)
+
+        result = await claws.increase(sku, float(amount))
+
+        if result is None:
+            return f"Invalid sku: {sku}"
+
+        item = result["item"]
         unit = item["UNIT"] or "units"
 
         response_message = (
@@ -272,31 +249,23 @@ class DB_Commands:
             f"Low: {item['LOW']}"
         )
 
-        if item["LOW"] and not was_low:
-            thread_name = await self.create_low_thread(sku)
-            response_message += f"\nLow threshold reached, thread: {thread_name} created"
-
-        elif not item["LOW"] and old_thread_id is not None:
-            thread_message = await self.archive_low_thread(sku)
-            response_message += f"\n{thread_message}"
+        if result["transition"] == "low":
+            response_message += "\nLow threshold reached, a low-stock thread is on its way"
+        elif result["transition"] == "resolved":
+            response_message += "\nNo longer low, the low-stock thread is being archived"
 
         return response_message
 
+    @reports_service_errors
     async def handler_set_stock(self, sku, quantity):
-        global inventory
-
         sku = illusion_helpers.clean_sku(sku)
 
-        if not inventory.validate_sku(sku):
+        result = await claws.set_stock(sku, float(quantity))
+
+        if result is None:
             return f"Invalid sku: {sku}"
 
-        old_item = inventory.get_item(sku)
-        was_low = old_item["LOW"]
-        old_thread_id = old_item["LOW_THREAD_ID"]
-
-        item = inventory.set_stock(sku, float(quantity))
-        inventory.save()
-
+        item = result["item"]
         unit = item["UNIT"] or "units"
 
         response_message = (
@@ -305,21 +274,24 @@ class DB_Commands:
             f"Low: {item['LOW']}"
         )
 
-        if item["LOW"] and not was_low:
-            thread_name = await self.create_low_thread(sku)
-            response_message += f"\nLow threshold reached, thread: {thread_name} created"
-
-        elif not item["LOW"] and old_thread_id is not None:
-            thread_message = await self.archive_low_thread(sku)
-            response_message += f"\n{thread_message}"
+        if result["transition"] == "low":
+            response_message += "\nLow threshold reached, a low-stock thread is on its way"
+        elif result["transition"] == "resolved":
+            response_message += "\nNo longer low, the low-stock thread is being archived"
 
         return response_message
 
-    async def create_low_thread(self, sku):
-        global inventory
+    async def create_low_thread(self, sku, item=None):
+        """Open a forum thread for an item that just went low.
+
+        Driven by claws' item.low event rather than called inline by whichever
+        command changed the stock: once the kiosk is its own process it has no
+        Discord connection at all, so it cannot be the one to do this.
+        """
         global channel
 
-        item = inventory.get_item(sku)
+        if item is None:
+            item = await claws.get_item(sku)
 
         if item is None:
             return None
@@ -330,19 +302,15 @@ class DB_Commands:
             view=presentation.make_vendor_buttons(item),
         )
 
-        inventory.update_item(sku, {"LOW_THREAD_ID": thread_with_message.thread.id,},)
-        inventory.save()
+        await claws.set_low_thread(sku, thread_with_message.thread.id)
 
         return thread_with_message.thread.name
-    
-    async def archive_low_thread(self, sku):
-        global inventory
+
+    async def archive_low_thread(self, sku, item=None):
         global bot
 
-        if not inventory.validate_sku(sku):
-            return "Invalid SKU"
-
-        item = inventory.get_item(sku)
+        if item is None:
+            item = await claws.get_item(sku)
 
         if item is None:
             return "No item found."
@@ -359,8 +327,7 @@ class DB_Commands:
                 thread = await bot.fetch_channel(int(thread_id))
 
         except discord.NotFound:
-            inventory.update_item(sku, {"LOW_THREAD_ID": None})
-            inventory.save()
+            await claws.set_low_thread(sku, None)
             return "Stored thread no longer exists."
 
         if not isinstance(thread, discord.Thread):
@@ -371,11 +338,10 @@ class DB_Commands:
             reason=f"{sku} resolved",
         )
 
-        inventory.update_item(sku, {"LOW_THREAD_ID": None})
-        inventory.save()
+        await claws.set_low_thread(sku, None)
 
         return "Low-stock thread archived."
-    
+
     async def handler_generate_barcode(self, sku):
         return await lipgloss.render(style="classic_barcode", sku=sku, width=350, height=280, rotate=0)
 
@@ -442,20 +408,12 @@ class DB_Commands:
 
         return await lipgloss.cancel(job_id)
 
+    @reports_service_errors
     async def handler_update_item(self, sku, updates: dict[str, object]):
-        global inventory
         sku = illusion_helpers.clean_sku(sku)
 
-        if not inventory.validate_sku(sku):
-            return f"Invalid sku: {sku}"
-        
-        # Automatically adds a digikey link if a digikey link was added
-        if updates.get("DIGIKEY_PART_NUMBER") is not None:
-            digikey_link = f"https://www.digikey.ca/en/products/result?keywords={updates['DIGIKEY_PART_NUMBER']}"
-            inventory.add_vendor(sku, "Digikey", digikey_link)
-
         cleaned = {}
-        
+
         for key, value in updates.items():
             if value != None:
                 cleaned[key] = value
@@ -465,19 +423,27 @@ class DB_Commands:
         if not updates:
             return "No updates provided."
 
-        inventory.update_item(sku, updates)
-        inventory.save()
+        result = await claws.update_item(sku, updates)
+
+        if result is None:
+            return f"Invalid sku: {sku}"
+
+        # Automatically adds a digikey link if a digikey part number was added.
+        # Only after the update lands, so an invalid sku does not leave a vendor
+        # row behind on an item that was never touched.
+        if updates.get("DIGIKEY_PART_NUMBER") is not None:
+            digikey_link = f"https://www.digikey.ca/en/products/result?keywords={updates['DIGIKEY_PART_NUMBER']}"
+            await claws.add_vendor(sku, "Digikey", digikey_link)
 
         changed_fields = ", ".join(updates.keys())
 
         return f"Updated {sku}: {changed_fields}"
     
+    @reports_service_errors
     async def handler_digikey_scan(self, barcode_text: str):
-        global inventory
-
         try:
-            data = await asyncio.to_thread(dk.lookup_barcode, barcode_text)
-        except Exception as e:
+            data = await claws.digikey_scan(barcode_text)
+        except ServiceUnavailable as e:
             return f"DigiKey lookup failed: {e}"
 
         dkpn = data.get("DigiKeyPartNumber")
@@ -487,7 +453,7 @@ class DB_Commands:
         if not dkpn:
             return "Barcode didn't contain a DigiKey part number"
 
-        existing = inventory.get_item_by_dkpn(dkpn)
+        existing = await claws.item_by_dkpn(dkpn)
 
         if existing is not None:
             sku = existing["SKU"]
@@ -513,14 +479,13 @@ class DB_Commands:
             "NOTES": None,
         }
 
-        new_sku = inventory.add_item(new_item)
-        inventory.save()
+        new_sku = await claws.add_item(new_item)
+
         return f"New item {new_sku} created from {dkpn} with {quantity} on hand"
 
+    @reports_service_errors
     async def handler_get_tags(self, discord=False):
-        global inventory
-
-        tags = inventory.get_tags()
+        tags = await claws.tags()
 
         if not tags:
             return "No tags found."
@@ -530,10 +495,9 @@ class DB_Commands:
         else:
             return illusion_helpers.make_table(tags)
 
+    @reports_service_errors
     async def handler_search_tag(self, tag, discord=False):
-        global inventory
-
-        results = inventory.get_items_by_tag(tag)
+        results = await claws.items_by_tag(tag)
 
         if not results:
             return f"No items found with tag: {tag}"
@@ -565,9 +529,8 @@ class DB_Commands:
         else:
             return illusion_helpers.make_table(results, exclude=exclude)
 
+    @reports_service_errors
     async def handler_add_tag(self, sku: str, tag: str):
-        global inventory
-
         sku = illusion_helpers.clean_sku(sku)
         tag = tag.strip()
 
@@ -577,7 +540,7 @@ class DB_Commands:
         if "," in tag:
             return "Tag cannot contain commas."
 
-        existing_tags = inventory.get_item_tags(sku)
+        existing_tags = await claws.item_tags(sku)
 
         if existing_tags is None:
             return f"Invalid sku: {sku}"
@@ -587,8 +550,7 @@ class DB_Commands:
         if tag.casefold() in existing_keys:
             return f"{sku} already has tag: {tag}"
 
-        inventory.add_tag(sku, tag)
-        inventory.save()
+        await claws.add_tag(sku, tag)
 
         return f"Added tag `{tag}` to {sku}"
 
@@ -773,117 +735,126 @@ async def terminal_loop():
         command = parts[0].lower()
         response_message = None
 
-        if command == "exit" and len(parts) >= 1:
-            response_message = "Exiting"
-            print(response_message)
-            await graceful_exit("terminal exit")
-            break
+        try:
+            if command == "exit" and len(parts) >= 1:
+                response_message = "Exiting"
+                print(response_message)
+                await graceful_exit("terminal exit")
+                break
 
-        elif command == "help" and len(parts) >= 1:
-            response_message = await command_handler.handler_command_help()
+            elif command == "help" and len(parts) >= 1:
+                response_message = await command_handler.handler_command_help()
 
-        elif command == "about" and len(parts) >= 1:
-            bot_uptime, system_uptime = await command_handler.handler_uptime()
-            text = f"""illusion \nversion: {illusion_version}\nbot uptime: {bot_uptime}\nsystem uptime: {system_uptime}""".strip("\n")
+            elif command == "about" and len(parts) >= 1:
+                bot_uptime, system_uptime = await command_handler.handler_uptime()
+                text = f"""illusion \nversion: {illusion_version}\nbot uptime: {bot_uptime}\nsystem uptime: {system_uptime}""".strip("\n")
             
-            hat_lines = joanne_hat.splitlines()
-            text_lines = text.splitlines()
+                hat_lines = joanne_hat.splitlines()
+                text_lines = text.splitlines()
 
-            hat_width = max(len(line) for line in hat_lines)
-            gap = 4
+                hat_width = max(len(line) for line in hat_lines)
+                gap = 4
 
-            for i in range(len(hat_lines)):
-                if len(text_lines) > i:
-                    if i != 2:
-                        print(f"\033[38;2;192;140;149m{hat_lines[i].ljust(hat_width + gap)}\033[0m{text_lines[i]}")
+                for i in range(len(hat_lines)):
+                    if len(text_lines) > i:
+                        if i != 2:
+                            print(f"\033[38;2;192;140;149m{hat_lines[i].ljust(hat_width + gap)}\033[0m{text_lines[i]}")
+                        else:
+                            print(f"\033[38;2;230;222;208m{hat_lines[i].ljust(hat_width + gap)}\033[0m{text_lines[i]}")
                     else:
-                        print(f"\033[38;2;230;222;208m{hat_lines[i].ljust(hat_width + gap)}\033[0m{text_lines[i]}")
-                else:
-                    if i != 2:
-                        print(f"\033[38;2;192;140;149m{hat_lines[i].ljust(hat_width + gap)}\033[0m")
-                    else:
-                        print(f"\033[38;2;230;222;208m{hat_lines[i].ljust(hat_width + gap)}\033[0m")
+                        if i != 2:
+                            print(f"\033[38;2;192;140;149m{hat_lines[i].ljust(hat_width + gap)}\033[0m")
+                        else:
+                            print(f"\033[38;2;230;222;208m{hat_lines[i].ljust(hat_width + gap)}\033[0m")
             
-            response_message = ""
+                response_message = ""
 
-        elif command == "get_tags" and len(parts) >= 1:
-            response_message = await command_handler.handler_get_tags()
-        elif command == "add_tag" and len(parts) == 3:
-            response_message = await command_handler.handler_add_tag(parts[1], parts[2])
-        elif parts[0].startswith("EER-") and len(parts) >= 1: # Basic bar code scanner support
-            response_message = await command_handler.handler_decrease(parts[0])
-        elif text.startswith("[)>") or (text.isdigit() and len(text) > 8): # Digikey data matrix
-            response_message = await command_handler.handler_digikey_scan(text.strip().replace("|", "\u241d"))
-        elif command == "resolve" and len(parts) >= 2:
-            response_message = await command_handler.handler_resolve(parts[1])
-        elif command == "delete" and len(parts) >= 2:
-            response_message = await command_handler.handler_delete_item(parts[1])
-        elif command == "info" and len(parts) >= 2:
-            response_message = await command_handler.handler_info(parts[1])
-        elif command == "search" and len(parts) >= 2:
-            response_message = await command_handler.handler_search(parts[1])
-        elif command == "decrease" and len(parts) >= 2:
-            if len(parts) == 3:
-                response_message = await command_handler.handler_decrease(parts[1], parts[2])
-            else:
-                response_message = await command_handler.handler_decrease(parts[1])
-        elif command == "increase" and len(parts) >= 2:
-            if len(parts) == 3:
-                response_message = await command_handler.handler_increase(parts[1], parts[2])
-            else:
-                response_message = await command_handler.handler_increase(parts[1])
-        elif command == "print_barcode" and config["illusion"]["printer"]["niimbot"]["enabled"] and len(parts) >= 2:
-            if len(parts) != 3:
-                style = "slim_barcode"
-                sku = parts[1]
-                line_1 = None
-            else:
-                style = "label_2_line"
-                sku = parts[1]
-                line_1 = parts[2]
-
-            response_message = await command_handler.handler_print(style=style, text_line_1=line_1, sku=sku, reply_to=TERMINAL_REPLY_TO)
-        elif command == "printer_info" and config["illusion"]["printer"]["niimbot"]["enabled"] and len(parts) >= 1:
-            response_message = await command_handler.handler_printer_info()
-        elif command == "print_label" and config["illusion"]["printer"]["niimbot"]["enabled"] and len(parts) >= 2:
-            # Awful, Awful, Awful
-            # I hate this code
-            # Can't be replaced by shlex without breaking non qouted strings
-            if len(parts) == 3:
-                cleaned_text = text.replace("print_label ", "")
-                if '"' in cleaned_text:
-                    lines = cleaned_text.split('"')
-                    if len(lines) >= 4:
-                        line_1 = lines[1]
-                        line_2 = lines[3] # Why did i flip this order before????????? -PC
-                        style = "label_2_line"
-                    else:
-                        response_message = "Invalid Qoutes"
+            elif command == "get_tags" and len(parts) >= 1:
+                response_message = await command_handler.handler_get_tags()
+            elif command == "add_tag" and len(parts) == 3:
+                response_message = await command_handler.handler_add_tag(parts[1], parts[2])
+            elif parts[0].startswith("EER-") and len(parts) >= 1: # Basic bar code scanner support
+                response_message = await command_handler.handler_decrease(parts[0])
+            elif text.startswith("[)>") or (text.isdigit() and len(text) > 8): # Digikey data matrix
+                response_message = await command_handler.handler_digikey_scan(text.strip().replace("|", "\u241d"))
+            elif command == "resolve" and len(parts) >= 2:
+                response_message = await command_handler.handler_resolve(parts[1])
+            elif command == "delete" and len(parts) >= 2:
+                response_message = await command_handler.handler_delete_item(parts[1])
+            elif command == "info" and len(parts) >= 2:
+                response_message = await command_handler.handler_info(parts[1])
+            elif command == "search" and len(parts) >= 2:
+                response_message = await command_handler.handler_search(parts[1])
+            elif command == "decrease" and len(parts) >= 2:
+                if len(parts) == 3:
+                    response_message = await command_handler.handler_decrease(parts[1], parts[2])
                 else:
-                    line_1 = f"{parts[1]} {parts[2]}"
-                    line_2 = None
+                    response_message = await command_handler.handler_decrease(parts[1])
+            elif command == "increase" and len(parts) >= 2:
+                if len(parts) == 3:
+                    response_message = await command_handler.handler_increase(parts[1], parts[2])
+                else:
+                    response_message = await command_handler.handler_increase(parts[1])
+            elif command == "print_barcode" and config["illusion"]["printer"]["niimbot"]["enabled"] and len(parts) >= 2:
+                if len(parts) != 3:
+                    style = "slim_barcode"
+                    sku = parts[1]
+                    line_1 = None
+                else:
+                    style = "label_2_line"
+                    sku = parts[1]
+                    line_1 = parts[2]
+
+                response_message = await command_handler.handler_print(style=style, text_line_1=line_1, sku=sku, reply_to=TERMINAL_REPLY_TO)
+            elif command == "printer_info" and config["illusion"]["printer"]["niimbot"]["enabled"] and len(parts) >= 1:
+                response_message = await command_handler.handler_printer_info()
+            elif command == "print_label" and config["illusion"]["printer"]["niimbot"]["enabled"] and len(parts) >= 2:
+                # Awful, Awful, Awful
+                # I hate this code
+                # Can't be replaced by shlex without breaking non qouted strings
+                if len(parts) == 3:
+                    cleaned_text = text.replace("print_label ", "")
+                    if '"' in cleaned_text:
+                        lines = cleaned_text.split('"')
+                        if len(lines) >= 4:
+                            line_1 = lines[1]
+                            line_2 = lines[3] # Why did i flip this order before????????? -PC
+                            style = "label_2_line"
+                        else:
+                            response_message = "Invalid Qoutes"
+                    else:
+                        line_1 = f"{parts[1]} {parts[2]}"
+                        line_2 = None
+                        style = "label_1_line"
+                else:
+                    line_1 = parts[1]
                     style = "label_1_line"
-            else:
-                line_1 = parts[1]
-                style = "label_1_line"
-                line_2 = None
+                    line_2 = None
             
-            if response_message == None:
-                response_message = await command_handler.handler_print(style=style, text_line_1=line_1, text_line_2=line_2, reply_to=TERMINAL_REPLY_TO)
-        elif command == "bulk_print" and config["illusion"]["printer"]["niimbot"]["enabled"] and len(parts) == 3:
-            response_message = await command_handler.handler_bulk_print_niimbot(parts[1], parts[2], reply_to=TERMINAL_REPLY_TO)
-        elif command == "print_queue" and config["illusion"]["printer"]["niimbot"]["enabled"] and len(parts) >= 1:
-            response_message = await command_handler.handler_print_queue()
-        elif command == "print_resume" and config["illusion"]["printer"]["niimbot"]["enabled"] and len(parts) >= 1:
-            response_message = await command_handler.handler_print_resume()
-        elif command == "print_clear" and config["illusion"]["printer"]["niimbot"]["enabled"] and len(parts) >= 1:
-            response_message = await command_handler.handler_print_clear()
-        elif command == "print_cancel" and config["illusion"]["printer"]["niimbot"]["enabled"] and len(parts) >= 2:
-            response_message = await command_handler.handler_print_cancel(parts[1])
-        elif command == "set" and len(parts) == 3:
-            response_message = await command_handler.handler_set_stock(parts[1], parts[2])
-        else:
-            response_message = f"Invalid Command: {command}\n\nHelp:{await command_handler.handler_command_help()}"
+                if response_message == None:
+                    response_message = await command_handler.handler_print(style=style, text_line_1=line_1, text_line_2=line_2, reply_to=TERMINAL_REPLY_TO)
+            elif command == "bulk_print" and config["illusion"]["printer"]["niimbot"]["enabled"] and len(parts) == 3:
+                response_message = await command_handler.handler_bulk_print_niimbot(parts[1], parts[2], reply_to=TERMINAL_REPLY_TO)
+            elif command == "print_queue" and config["illusion"]["printer"]["niimbot"]["enabled"] and len(parts) >= 1:
+                response_message = await command_handler.handler_print_queue()
+            elif command == "print_resume" and config["illusion"]["printer"]["niimbot"]["enabled"] and len(parts) >= 1:
+                response_message = await command_handler.handler_print_resume()
+            elif command == "print_clear" and config["illusion"]["printer"]["niimbot"]["enabled"] and len(parts) >= 1:
+                response_message = await command_handler.handler_print_clear()
+            elif command == "print_cancel" and config["illusion"]["printer"]["niimbot"]["enabled"] and len(parts) >= 2:
+                response_message = await command_handler.handler_print_cancel(parts[1])
+            elif command == "set" and len(parts) == 3:
+                response_message = await command_handler.handler_set_stock(parts[1], parts[2])
+            else:
+                response_message = f"Invalid Command: {command}\n\nHelp:{await command_handler.handler_command_help()}"
+        except ServiceUnavailable as e:
+            # Fail fast: the command is simply not applied, and says so
+            response_message = f"Service unavailable, command not applied.\n{e}"
+        except Exception as e:
+            # One bad command must never take the terminal down with it. The
+            # kiosk is the only way to touch inventory from the closet, and a
+            # dead prompt there means someone has to go find a keyboard.
+            response_message = f"Command failed: {e}"
 
         if response_message != None:
             print(response_message)
@@ -965,12 +936,13 @@ async def increase(interaction: discord.Interaction, sku: str, amount: str | Non
 async def info(interaction: discord.Interaction, sku: str, hide_ext: bool = True):
     await interaction.response.defer()
     cleaned_sku = illusion_helpers.clean_sku(sku)
-    if not inventory.validate_sku(cleaned_sku):
+    item = await claws.get_item(cleaned_sku)
+
+    if item is None:
         await interaction.followup.send("Invalid sku")
         return
-    
+
     response_message = await command_handler.handler_info(sku, hide_ext, discord=True)
-    item = inventory.get_item(cleaned_sku)
     view = presentation.make_vendor_buttons(item)
     if view != None:
         await interaction.followup.send(embed=response_message, view=view,)
@@ -1200,6 +1172,64 @@ def register_notifier(token, handler):
         notifiers.popitem(last=False)
 
 
+async def claws_event_loop():
+    """Own the low-stock thread lifecycle, driven by claws.
+
+    This is the coupling the split exists to break. Creating the thread used to
+    happen inline inside handler_decrease, which only worked because the bot and
+    the kiosk shared a process. Now claws reports the transition and whoever is
+    connected to Discord reacts to it, so a scan at the kiosk still opens a
+    thread even though the kiosk cannot talk to Discord at all.
+    """
+    await bot.wait_until_ready()
+
+    await reconcile_low_threads()
+
+    while not shutdown_event.is_set():
+        try:
+            async for event in claws.events():
+                try:
+                    if event["event"] == "item.low":
+                        await command_handler.create_low_thread(event["sku"], event["item"])
+                    elif event["event"] == "item.resolved":
+                        await command_handler.archive_low_thread(event["sku"], event["item"])
+                except Exception as e:
+                    print(f"Unable to handle {event['event']} for {event['sku']}: {e}")
+        except Exception as e:
+            if shutdown_event.is_set():
+                return
+
+            print(f"claws event stream dropped ({e}), reconnecting")
+
+        await asyncio.sleep(5)
+
+
+async def reconcile_low_threads():
+    """Catch up on transitions that happened while the bot was down.
+
+    Events are not replayed, so an item that went low, or stopped being low,
+    while Discord was unreachable would otherwise be stuck with a missing or an
+    orphaned thread forever. Cheap to check: it is one pass over the inventory
+    at startup.
+    """
+    try:
+        items = await claws.read_all()
+    except ServiceUnavailable as e:
+        print(f"Could not reconcile low-stock threads: {e}")
+        return
+
+    for item in items:
+        try:
+            if item["LOW"] and not item["LOW_THREAD_ID"]:
+                print(f"Reconciling {item['SKU']}: low with no thread, creating one")
+                await command_handler.create_low_thread(item["SKU"], item)
+            elif not item["LOW"] and item["LOW_THREAD_ID"]:
+                print(f"Reconciling {item['SKU']}: not low but thread still open, archiving")
+                await command_handler.archive_low_thread(item["SKU"], item)
+        except Exception as e:
+            print(f"Could not reconcile {item['SKU']}: {e}")
+
+
 async def lipgloss_event_loop():
     """Route print events back to whoever asked for the job.
 
@@ -1259,11 +1289,12 @@ async def print_niimbot(interaction: discord.Interaction, style: app_commands.Ch
 
     if get_text_from_sku == True:
         sku = illusion_helpers.clean_sku(sku)
-        if inventory.validate_sku(sku) == False:
+        item = await claws.get_item(sku)
+
+        if item is None:
             await interaction.response.send_message(f"Invalid sku: {sku}")
             return
 
-        item = inventory.get_item(sku)
         text_line_1 = item["NAME"]
 
     # Make sure we have all required values for each style
@@ -1444,16 +1475,9 @@ async def graceful_exit(reason: str = "unknown"):
         print(f"Error closing lipgloss client: {e}")
 
     try:
-        inventory.save()
+        await claws.aclose()
     except Exception as e:
-        print(f"Error saving inventory: {e}")
-
-    try:
-        close_method = getattr(inventory, "close", None)
-        if callable(close_method):
-            close_method()
-    except Exception as e:
-        print(f"Error closing inventory: {e}")
+        print(f"Error closing claws client: {e}")
 
     try:
         await bot.close()
@@ -1474,6 +1498,8 @@ async def setup_hook():
     install_signal_handlers()
     bot.loop.create_task(terminal_loop())
 
+    bot.loop.create_task(claws_event_loop())
+
     if PRINTING_ENABLED:
         bot.loop.create_task(lipgloss_event_loop())
 
@@ -1483,7 +1509,8 @@ try:
     config = illusion_config.load(CONFIG_PATH)
 
     required = [
-        "illusion.database_location",
+        "illusion.claws.url",
+        "illusion.claws.token",
         "illusion.discord.token",
         "illusion.discord.server_id",
         "illusion.discord.fourm_id",
@@ -1501,12 +1528,6 @@ try:
             "illusion.lipgloss.token",
         ]
 
-    if illusion_config.get(config, "illusion.digikey.enabled"):
-        required += [
-            "illusion.digikey.client_id",
-            "illusion.digikey.client_secret",
-        ]
-
     illusion_config.require(config, required, source=CONFIG_PATH)
 except illusion_config.ConfigError as e:
     print(e)
@@ -1519,15 +1540,17 @@ GUILD_ID = config["illusion"]["discord"]["server_id"]
 FORUM_CHANNEL_ID = config["illusion"]["discord"]["fourm_id"] 
 
 command_handler = DB_Commands()
-inventory = SpreadsheetManager(config["illusion"]["database_location"])
+claws = ClawsClient(
+    illusion_config.get(config, "illusion.claws.url"),
+    illusion_config.get(config, "illusion.claws.token"),
+)
 lipgloss = LipglossClient(
     illusion_config.get(config, "illusion.lipgloss.url"),
     illusion_config.get(config, "illusion.lipgloss.token"),
 )
 
-# Digikey support
-if config["illusion"]["digikey"]["enabled"] == True:
-    dk = DigiKeyClient(CONFIG_PATH)
+# DigiKey lookups happen inside claws now: it is the service with the good
+# internet connection and the one that owns the tokens it has to refresh.
 
 
 def main():

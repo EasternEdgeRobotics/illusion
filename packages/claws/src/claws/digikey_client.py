@@ -13,14 +13,17 @@ TOKEN_URL = f"{API_BASE}/v1/oauth2/token"
 
 
 class DigiKeyClient:
-    def __init__(self, config_path="./config.yaml"):
+    def __init__(self, config_path="./config.yaml", root="illusion"):
         self.config_path = Path(config_path)
+        # Which top level key the digikey block sits under: "illusion" in the
+        # combined config, "claws" once the service owns it
+        self.root = root
         self.lock = threading.Lock()
 
         with self.config_path.open("r") as f:
             config = yaml.safe_load(f)
 
-        dk = config["illusion"]["digikey"]
+        dk = config[self.root]["digikey"]
         self.client_id = dk["client_id"]
         self.client_secret = dk["client_secret"]
         self.tokens = dk.get("tokens") or {}
@@ -36,7 +39,7 @@ class DigiKeyClient:
         with self.config_path.open("r") as f:
             config = yaml.safe_load(f)
 
-        config["illusion"]["digikey"]["tokens"] = self.tokens
+        config[self.root]["digikey"]["tokens"] = self.tokens
         
         # Atomic write: temp file then rename, so a crash can't corrupt config
         tmp_path = self.config_path.with_suffix(".yaml.tmp")
