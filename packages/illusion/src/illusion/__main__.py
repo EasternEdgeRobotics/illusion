@@ -1073,8 +1073,15 @@ async def add_hybrid(interaction: discord.Interaction, item_name: str, priority:
 async def add_with_dkpn(interaction: discord.Interaction, digikey_part_number: str, priority: int, 
                    quantity: float, order_quantity: float, low_threshold: float, unit: str, item_name: str | None = None, tags: str | None = None, notes: str | None = None):
 
-    dkpn_info = dk.lookup_part_number(digikey_part_number)
+    await interaction.response.defer()
+
     if item_name == None:
+        try:
+            dkpn_info = await claws.digikey_part(digikey_part_number)
+        except ServiceUnavailable as e:
+            await interaction.followup.send(f"Could not look up {digikey_part_number}.\n{e}")
+            return
+
         item_name = f"{dkpn_info["Product"]["Manufacturer"]["Name"]} {dkpn_info["Product"]["Description"]["ProductDescription"]}"
 
     if tags == None:
@@ -1086,7 +1093,7 @@ async def add_with_dkpn(interaction: discord.Interaction, digikey_part_number: s
                                                               quantity, low_threshold, unit, 1, None, None, 
                                                               None, None, None, None, None, None, None, None, digikey_part_number, tags, notes,)
 
-    await interaction.response.send_message(response_message)
+    await interaction.followup.send(response_message)
 
 # Something about search makes discord hate it, no clue why -PC
 @bot.tree.command(name="search", description="Search inventory by item name")

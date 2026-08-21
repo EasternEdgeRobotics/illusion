@@ -299,6 +299,16 @@ def create_app(config_path="./claws.yaml"):
 
         return data
 
+    @app.get("/digikey/part/{part_number:path}", dependencies=auth)
+    async def digikey_part(part_number: str):
+        if digikey is None:
+            raise HTTPException(status_code=503, detail="DigiKey support is not enabled")
+
+        try:
+            return await asyncio.to_thread(digikey.lookup_part_number, part_number)
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"DigiKey lookup failed: {e}")
+
     @app.get("/events", dependencies=auth)
     async def event_stream():
         subscription = events.subscribe()

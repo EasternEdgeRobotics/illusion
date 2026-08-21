@@ -222,5 +222,8 @@ class ClawsClient(BaseClient):
     async def item_by_dkpn(self, dkpn):
         return await self.get(f"/items/by-dkpn/{dkpn}")
 
+    async def digikey_part(self, part_number):
+        return await self.get(f"/digikey/part/{part_number}")
+
     async def digikey_scan(self, barcode):
         return await self.post("/digikey/scan", json={"barcode": barcode})
