@@ -21,9 +21,7 @@ uv sync --package lipgloss       # then: uv run lipgloss
 uv sync --package illusion-kiosk # then: uv run illusion-kiosk
 ```
 
-Every service reads its own config file (`claws.yaml`, `bot.yaml`,
-`lipgloss.yaml`, `kiosk.yaml`), each with a committed `.example.yaml` alongside
-it.
+Every service reads its own config file (`claws.yaml`, `bot.yaml`, `lipgloss.yaml`, `kiosk.yaml`), each with a committed `.example.yaml` alongside it.
 
 ## Development
 All four on one machine, from a single checkout:
