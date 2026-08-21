@@ -403,6 +403,41 @@ process. Stop illusion, then:
 
 ## Deployment specifics
 
+### SSH between the hosts (Alpine quirks)
+
+Both hosts are Alpine, which splits OpenSSH into pieces and defaults differently
+from most distros:
+
+- **`scp` does not work out of the box.** OpenSSH 9.0+ runs scp over the SFTP
+  protocol, and Alpine ships `openssh-sftp-server` as a separate package that a
+  minimal install will not have. `sshd_config` references the subsystem and it
+  simply fails. `apk add openssh-sftp-server` on both, or use `scp -O` for the
+  legacy protocol. This matters for the one-off database copy in "Moving the
+  database".
+- **`rsync` is not installed either**, and the nightly backup needs it on both
+  ends. It is unaffected by the sftp issue -- rsync speaks its own protocol over
+  ssh.
+- **`ssh-copy-id` lives in `openssh-client-common`**, not the server package. If
+  it is missing, append the key by hand:
+
+        ssh user@host 'mkdir -p ~/.ssh && chmod 700 ~/.ssh && \
+            cat >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys' \
+            < ~/.ssh/id_ed25519.pub
+
+- **`doas`, not `sudo`**, and OpenRC, not systemd: `rc-service sshd restart`,
+  `rc-update add sshd default`.
+- **Default shell is busybox `ash`.** Keep scripts POSIX; no `#!/bin/bash`.
+
+Alternatively, skip key distribution entirely: Tailscale is already on both
+hosts, and `tailscale up --ssh` plus an `ssh` rule in the tailnet ACL
+authenticates on tailnet identity with no keys to move around. It only works
+over the tailnet, so keep a key or console path as the fallback.
+
+If sshd is locked to key-only, confirm key login works first. The escape hatches
+differ: the VM has a TrueNAS console, the closet laptop needs someone physically
+in the closet.
+
+
 ### Closet laptop (Alpine, sway autologin)
 
 - **lipgloss** runs under OpenRC with `supervise-daemon` so it comes back after a
