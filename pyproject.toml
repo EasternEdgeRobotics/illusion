@@ -1,19 +1,14 @@
-[project]
-name = "illusion"
-version = "1.4.0"
-description = "The Perfect Illusion of an inventory system"
-readme = "README.md"
-requires-python = ">=3.14"
-dependencies = [
-    "click>=8.4.2",
-    "discord-py>=2.7.1",
-    "niimprint",
-    "pyserial>=3.5",
-    "python-barcode>=0.16.1",
-    "pyyaml>=6.0.3",
-    "qrcode[pil]>=8.2",
-    "requests>=2.34.2",
-]
+[tool.uv.workspace]
+members = ["packages/*"]
 
 [tool.uv.sources]
+illusion-core = { workspace = true }
 niimprint = { git = "https://github.com/Peyton-C/niimprint" }
+
+[dependency-groups]
+dev = [
+    "illusion",
+    "claws",
+    "lipgloss",
+    "illusion-core",
+]

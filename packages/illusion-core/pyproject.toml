@@ -1,0 +1,15 @@
+[project]
+name = "illusion-core"
+version = "1.5.0"
+description = "Shared helpers and wire types for illusion, claws and lipgloss"
+requires-python = ">=3.14"
+dependencies = [
+    # discord is a temporary Phase 1 dependency: print_queue still builds its own
+    # embeds. Phase 2 moves make_embed/make_vendor_buttons into the illusion
+    # frontend and drops this.
+    "discord-py>=2.7.1",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

@@ -1,0 +1,21 @@
+[project]
+name = "illusion"
+version = "1.5.0"
+description = "Discord bot and terminal kiosk for illusion"
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = [
+    "illusion-core",
+    "claws",
+    "lipgloss",
+    "click>=8.4.2",
+    "discord-py>=2.7.1",
+    "pyyaml>=6.0.3",
+]
+
+[project.scripts]
+illusion = "illusion.__main__:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
