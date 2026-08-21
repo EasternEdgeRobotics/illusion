@@ -1,0 +1,17 @@
+# Copy to lipgloss.yaml and fill in. lipgloss.yaml is gitignored.
+# Runs on the machine the Niimbot is plugged into.
+lipgloss:
+  bind:
+    # The bot reaches this across the tailnet, so it cannot be loopback in
+    # production -- but bind the tailnet address (100.x.y.z), not 0.0.0.0. The
+    # closet network is not ours and has working LAN.
+    host: 127.0.0.1      # tailnet address in production, localhost while co-located
+    port: 8081
+  token:                 # shared bearer token, must match the frontend's config
+  printer:
+    port:                # /dev/niimbot on Alpine, /dev/cu.usbmodem* on macOS
+    model: d110
+    font_path:           # TTF used for label text
+    font_size: 14
+  labels:
+    output_dir: /tmp/illusion-labels

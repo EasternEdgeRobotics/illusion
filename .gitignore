@@ -224,3 +224,15 @@ inventory.db
 inventory.db-shm
 inventory.db-wal
 barcode.png
+
+# illusion service configs (copy from config.example.yaml)
+config.yaml
+claws.yaml
+lipgloss.yaml
+bot.yaml
+kiosk.yaml
+lipgloss.yaml
+lipgloss.example.yaml.local
+claws.yaml
+kiosk.yaml
+bot.yaml

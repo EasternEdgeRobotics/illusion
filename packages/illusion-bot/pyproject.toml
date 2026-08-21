@@ -1,0 +1,18 @@
+[project]
+name = "illusion-bot"
+version = "1.5.0"
+description = "illusion, the Discord bot"
+requires-python = ">=3.14"
+dependencies = [
+    "illusion-core",
+    "discord-py>=2.7.1",
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.34",
+]
+
+[project.scripts]
+illusion-bot = "illusion_bot.__main__:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

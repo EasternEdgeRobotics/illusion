@@ -1,0 +1,25 @@
+# Copy to claws.yaml and fill in. claws.yaml is gitignored.
+# Runs on the NAS VM and owns the database.
+claws:
+  bind:
+    # The kiosk reaches this across the tailnet. Bind the VM's own tailnet
+    # address (100.x.y.z), not 0.0.0.0.
+    host: 127.0.0.1
+    port: 8080
+  token:                 # shared bearer token, must match the frontend's config
+  database_location: /var/lib/claws/inventory.db
+  # The fleet `about` reports on. A fixed set, so this is static config rather
+  # than service discovery -- and it is what lets `about` survive a claws
+  # restart, which would otherwise forget everything that had announced itself.
+  fleet:
+    illusion-bot: http://127.0.0.1:8090
+    lipgloss: http://eer-inventory:8081
+    illusion-kiosk: http://eer-inventory:8082
+  digikey:
+    enabled: false
+    client_id:
+    client_secret:
+    tokens:
+      access_token:      # written by digikey_client, leave blank
+      refresh_token:     # written by digikey_client, leave blank
+      expires_at:        # written by digikey_client, leave blank

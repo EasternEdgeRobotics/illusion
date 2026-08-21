@@ -2,41 +2,21 @@ import asyncio
 
 from collections import deque
 
-import discord
-
-import illusion_helpers
-from illusion_helpers import LabelError, PrinterUnavailable
+from lipgloss import printer
+from lipgloss.printer import LabelError, PrinterUnavailable
 
 MAX_COPIES = 100
 
-# Discord allows 25 fields per embed, and a queue that long is unreadable anyway
-MAX_EMBED_JOBS = 20
-
-QUEUE_FIELD_NAMES = {
-    "JOB_ID": "Job",
-    "DESCRIPTION": "Label",
-    "LABELS": "Labels",
-    "STATE": "State",
-    "SOURCE": "Source",
-}
-
-
-def notice_embed(title, description, urgent=False):
-    """A plain title and description embed, for print updates that arent a list of jobs."""
-    return discord.Embed(
-        title=title,
-        description=description,
-        color=illusion_helpers.ALERT_COLOUR if urgent else illusion_helpers.EMBED_COLOUR,
-    )
-
 
 class PrintJob:
-    def __init__(self, job_id, description, pages, notify=None, source="unknown", announce_when_done=False):
+    def __init__(self, job_id, description, pages, reply_to=None, source="unknown", announce_when_done=False):
         self.job_id = job_id
         self.description = description
         self.pages = pages  # Rendered image paths, printed in order
         self.printed = 0
-        self.notify = notify
+        # Opaque token naming the submitter, echoed on every event about this
+        # job so a client can pick its own updates off the shared stream
+        self.reply_to = reply_to
         self.source = source
         self.announce_when_done = announce_when_done
 
@@ -58,15 +38,6 @@ class PrintJob:
 
         return self.description
 
-    async def report(self, message, urgent=False, embed=None):
-        if self.notify is None:
-            return
-
-        try:
-            await self.notify(message, urgent, embed)
-        except Exception as e:
-            print(f"Unable to send print queue update: {e}")
-
 
 class PrintQueue:
     """Prints one label at a time in the background.
@@ -78,7 +49,8 @@ class PrintQueue:
     once someone resumes it.
     """
 
-    def __init__(self, port, model, delay=1, log=None):
+    def __init__(self, port, model, delay=1, log=None, events=None):
+        self._events = events
         self._port = port
         self._model = model
         self._delay = delay  # niimbot cant instantly take a new job, so we give it extra time between each one
@@ -135,7 +107,7 @@ class PrintQueue:
 
     # Adding work
 
-    def add(self, pages, description, copies=1, notify=None, source="unknown"):
+    def add(self, pages, description, copies=1, reply_to=None, source="unknown"):
         """Queue rendered label images. Returns (job, message)."""
         if isinstance(pages, str):
             pages = [pages]
@@ -153,7 +125,7 @@ class PrintQueue:
 
         try:
             for page in dict.fromkeys(pages):
-                illusion_helpers.check_label(page, self._model)
+                printer.check_label(page, self._model)
         except LabelError as e:
             return None, f"Unable to print, {e}"
 
@@ -161,7 +133,7 @@ class PrintQueue:
             job_id=self._next_job_id,
             description=description,
             pages=pages,
-            notify=notify,
+            reply_to=reply_to,
             source=source,
             announce_when_done=len(pages) > 1 or len(self._jobs) > 0,
         )
@@ -199,11 +171,11 @@ class PrintQueue:
     async def printer_media(self):
         """Media info for the loaded roll, raises PrinterUnavailable if it cant print."""
         async with self._printer_lock:
-            return await asyncio.to_thread(illusion_helpers.check_printer, self._port)
+            return await asyncio.to_thread(printer.check_printer, self._port)
 
     async def printer_info(self):
         async with self._printer_lock:
-            return await asyncio.to_thread(illusion_helpers.niimbot_printer_info, self._port)
+            return await asyncio.to_thread(printer.niimbot_printer_info, self._port)
 
     # Managing the queue
 
@@ -239,7 +211,7 @@ class PrintQueue:
             self._pause_reason = str(e)
             return f"Still unable to print, {e}\nThe print queue is staying paused."
 
-        remaining_media = illusion_helpers.media_remaining(media_info)
+        remaining_media = printer.media_remaining(media_info)
 
         self._paused = False
         self._pause_reason = None
@@ -291,42 +263,37 @@ class PrintQueue:
         return title, "\n".join(description), rows
 
     def status(self):
+        """The queue as plain data. Callers decide whether it becomes a table or an embed."""
         title, description, rows = self._status_parts()
 
-        if not rows:
-            return f"{title}\n{description}"
-
-        table = illusion_helpers.make_table(rows, exclude=["HEADER"], field_names=QUEUE_FIELD_NAMES, vertical=False)
-
-        return f"{title}\n{description}\n{table}"
-
-    def status_embed(self):
-        title, description, rows = self._status_parts()
-
-        hidden = len(rows) - MAX_EMBED_JOBS
-
-        if hidden > 0:
-            rows = rows[:MAX_EMBED_JOBS]
-            description = f"{description}\nOnly the first {MAX_EMBED_JOBS} are listed, {hidden} more behind them."
-
-        colour = illusion_helpers.ALERT_COLOUR if self._paused else illusion_helpers.EMBED_COLOUR
-
-        if not rows:
-            return notice_embed(title, description, urgent=self._paused)
-
-        # Job id and state are already in each field name
-        return illusion_helpers.make_embed(
-            rows,
-            exclude=["JOB_ID", "STATE"],
-            field_names=QUEUE_FIELD_NAMES,
-            title=title,
-            description=description,
-            colour=colour,
-            row_name="HEADER",
-            vertical=False,
-        )
+        return {
+            "title": title,
+            "description": description,
+            "paused": self._paused,
+            "pause_reason": self._pause_reason,
+            "pending_jobs": self.pending_jobs,
+            "pending_labels": self.pending_labels,
+            "jobs": rows,
+        }
 
     # Printing
+
+    def _publish(self, job, event, title, message, urgent=False):
+        if self._events is None:
+            return
+
+        self._events.publish(
+            {
+                "event": event,
+                "job_id": job.job_id,
+                "description": job.description,
+                "reply_to": job.reply_to,
+                "source": job.source,
+                "title": title,
+                "message": message,
+                "urgent": urgent,
+            }
+        )
 
     def _pause(self, reason):
         self._paused = True
@@ -346,7 +313,7 @@ class PrintQueue:
 
             try:
                 async with self._printer_lock:
-                    await asyncio.to_thread(illusion_helpers.niimbot_print, page, self._port, self._model)
+                    await asyncio.to_thread(printer.niimbot_print, page, self._port, self._model)
             except PrinterUnavailable as e:
                 self._pause(str(e))
 
@@ -359,11 +326,7 @@ class PrintQueue:
                     f"Fix the printer, then resume the queue."
                 )
 
-                await job.report(
-                    paused_message,
-                    urgent=True,
-                    embed=notice_embed("Print Queue Paused", paused_message, urgent=True),
-                )
+                self._publish(job, "printer.fault", "Print Queue Paused", paused_message, urgent=True)
 
                 continue
             except LabelError as e:
@@ -377,11 +340,7 @@ class PrintQueue:
 
                 skipped_message = f"Skipped a label in job {job.job_id} ({job.description}), {e}"
 
-                await job.report(
-                    skipped_message,
-                    urgent=True,
-                    embed=notice_embed("Label Skipped", skipped_message, urgent=True),
-                )
+                self._publish(job, "job.skipped", "Label Skipped", skipped_message, urgent=True)
 
                 continue
 
@@ -395,9 +354,6 @@ class PrintQueue:
                 if job.announce_when_done:
                     finished_message = f"Finished printing job {job.job_id}: {job.total} label(s), {job.description}"
 
-                    await job.report(
-                        finished_message,
-                        embed=notice_embed("Print Finished", finished_message),
-                    )
+                    self._publish(job, "job.done", "Print Finished", finished_message)
 
             await asyncio.sleep(self._delay)

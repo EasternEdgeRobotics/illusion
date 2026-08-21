@@ -1,0 +1,17 @@
+# Copy to kiosk.yaml and fill in. kiosk.yaml is gitignored.
+# Runs on the closet laptop, next to the scanner and the printer.
+kiosk:
+  claws:
+    url: http://claws-vm:8080    # tailnet address of the inventory service
+    token:                       # must match claws.yaml's token
+  health:
+    # The tailnet address (100.x.y.z), never 0.0.0.0. This laptop sits on a
+    # network that is not ours with working client-to-client LAN, so binding
+    # every interface exposes this to whoever else is on it.
+    host: 100.x.y.z
+    port: 8082
+  printer:
+    enabled: true                # gates the print commands
+  lipgloss:
+    url: http://127.0.0.1:8081   # lipgloss is on this same machine
+    token:                       # must match lipgloss.yaml's token

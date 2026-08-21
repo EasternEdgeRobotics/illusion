@@ -1,0 +1,17 @@
+[project]
+name = "illusion-kiosk"
+version = "1.5.0"
+description = "illusion, the terminal kiosk"
+requires-python = ">=3.14"
+dependencies = [
+    "illusion-core",
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.34",
+]
+
+[project.scripts]
+illusion-kiosk = "illusion_kiosk.__main__:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
