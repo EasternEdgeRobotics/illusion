@@ -120,27 +120,54 @@ def amount_problem(item, amount):
     return None
 
 
-def fields_problem(tracking_mode, values, sku=None):
-    """The same rule, for values being written rather than an amount applied.
+def no_count_problem(item, action):
+    """KANBAN items have no quantity at all, so counting operations are meaningless.
 
-    Without this, the amount check is trivially bypassed: a fractional
-    DECREASE_AMOUNT stored on the item is used by a bare `decrease` with no
-    amount of its own, and set_stock would happily write a fractional count that
-    decrease refuses to produce.
+    They are only low or not low: a decrease marks them low and that is the
+    whole model. Anything that sets or adds to a count would give them a
+    phantom quantity and, worse, let a LOW_THRESHOLD they should not have start
+    deciding their low state.
     """
+    if item["TRACKING_MODE"] != "KANBAN":
+        return None
+
+    return (
+        f"{item['SKU']} is KANBAN tracked, so it has no stock count to {action}. "
+        f"Mark it low with `decrease`, or clear that with `resolve`."
+    )
+
+
+def fields_problem(tracking_mode, values, sku=None):
+    """The same rules, for values being written rather than an amount applied.
+
+    Without this the checks are trivially bypassed: a fractional
+    DECREASE_AMOUNT stored on the item is what a bare `decrease` uses, and
+    writing QUANTITY_ON_HAND directly sidesteps set_stock entirely.
+    """
+    subject = sku or "This item"
+    present = [field for field in WHOLE_NUMBER_FIELDS if values.get(field) is not None]
+
+    if tracking_mode == "KANBAN":
+        if not present:
+            return None
+
+        return (
+            f"{subject} is KANBAN tracked, so it has no stock count. "
+            f"Leave {' and '.join(present)} unset, or track it as QUANTITY or HYBRID."
+        )
+
     if tracking_mode != "QUANTITY":
         return None
 
     bad = [
         f"{field} ({values[field]})"
-        for field in WHOLE_NUMBER_FIELDS
-        if values.get(field) is not None and _is_fractional(values[field])
+        for field in present
+        if _is_fractional(values[field])
     ]
 
     if not bad:
         return None
 
-    subject = sku or "This item"
     requirement = "must be a whole number" if len(bad) == 1 else "must be whole numbers"
 
     return f"{subject} is tracked per item, so {' and '.join(bad)} {requirement}. {FRACTION_HINT}"
@@ -393,7 +420,7 @@ def create_app(config_path="./claws.yaml"):
     @app.post("/items/{sku}/increase", dependencies=auth)
     async def increase(sku: str, request: Amount):
         old = _item_or_404(sku)
-        problem = amount_problem(old, request.amount)
+        problem = no_count_problem(old, "increase") or amount_problem(old, request.amount)
 
         if problem:
             return {"rejected": problem}
@@ -408,7 +435,7 @@ def create_app(config_path="./claws.yaml"):
     @app.put("/items/{sku}/stock", dependencies=auth)
     async def set_stock(sku: str, request: Quantity):
         old = _item_or_404(sku)
-        problem = fields_problem(
+        problem = no_count_problem(old, "set") or fields_problem(
             old["TRACKING_MODE"], {"QUANTITY_ON_HAND": request.quantity}, sku
         )
 
