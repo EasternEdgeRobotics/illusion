@@ -11,6 +11,7 @@ import asyncio
 import collections
 import os
 import signal
+import socket
 import time
 from importlib.metadata import version
 
@@ -18,6 +19,7 @@ from illusion_core import config as illusion_config
 from illusion_core import helpers as illusion_helpers
 from illusion_core.clients import ClawsClient, LipglossClient, ServiceUnavailable
 from illusion_core.commands import DB_Commands, Rows
+from illusion_core import fleet
 
 illusion_version = version("illusion-kiosk")
 
@@ -25,6 +27,9 @@ boot_time = time.time()
 
 shutdown_event = asyncio.Event()
 shutdown_started = False
+
+health_server = None
+health_task = None
 
 # Mirrors lipgloss's own limit
 MAX_COPIES = 100
@@ -243,8 +248,8 @@ async def terminal_loop():
                             print(f"\033[38;2;192;140;149m{hat_lines[i].ljust(hat_width + gap)}\033[0m")
                         else:
                             print(f"\033[38;2;230;222;208m{hat_lines[i].ljust(hat_width + gap)}\033[0m")
-            
-                response_message = ""
+
+                response_message = await fleet_status()
 
             elif command == "get_tags" and len(parts) >= 1:
                 response_message = render(await command_handler.handler_get_tags())
@@ -398,6 +403,17 @@ async def graceful_exit(reason: str = "unknown"):
 
     shutdown_event.set()
 
+    # Ask uvicorn to stop and give it a moment. Letting the loop tear it down
+    # instead leaves its lifespan task to die unhandled, which prints a
+    # CancelledError traceback on the way out.
+    if health_server is not None:
+        health_server.should_exit = True
+
+        try:
+            await asyncio.wait_for(health_task, timeout=3)
+        except (TimeoutError, asyncio.CancelledError, Exception):
+            pass
+
     for client in (claws, lipgloss):
         try:
             await client.aclose()
@@ -444,12 +460,63 @@ lipgloss = LipglossClient(
 
 command_handler = DB_Commands(claws, lipgloss, boot_time)
 
+SERVICE_NAME = "illusion-kiosk"
+HOSTNAME = socket.gethostname()
+
+# The kiosk is otherwise a pure client. It listens on exactly one read only
+# route so claws can tell whether it is alive -- cheaper than plumbing a reply
+# channel back down the event stream just to answer version questions.
+HEALTH_HOST = illusion_config.get(config, "kiosk.health.host", "127.0.0.1")
+HEALTH_PORT = illusion_config.get(config, "kiosk.health.port", 8082)
+
+
+async def fleet_status():
+    """The whole fleet, as a terminal table.
+
+    Falls back to what this machine can see for itself when claws is
+    unreachable, rather than printing nothing.
+    """
+    try:
+        status = await claws.status()
+    except ServiceUnavailable as e:
+        local = fleet.health_payload(SERVICE_NAME, illusion_version, boot_time)
+
+        return (
+            f"Could not reach claws, showing only this machine.\n{e}\n\n"
+            + illusion_helpers.make_table(
+                fleet.fleet_rows({"services": [{"state": "ok", **local}]}),
+                field_names=fleet.FLEET_FIELD_NAMES,
+                vertical=False,
+            )
+        )
+
+    table = illusion_helpers.make_table(
+        fleet.fleet_rows(status), field_names=fleet.FLEET_FIELD_NAMES, vertical=False
+    )
+
+    skew = fleet.version_skew(status)
+
+    return f"{table}\n{skew}" if skew else table
+
 
 async def run():
     install_signal_handlers()
 
     if PRINTING_ENABLED:
         asyncio.create_task(lipgloss_event_loop())
+
+    global health_server, health_task
+
+    if HEALTH_PORT:
+        health_server = fleet.make_health_server(
+            fleet.make_health_app(SERVICE_NAME, illusion_version, boot_time,
+                                  {"host": HOSTNAME}),
+            HEALTH_HOST,
+            HEALTH_PORT,
+        )
+        health_task = asyncio.create_task(health_server.serve())
+
+    await fleet.announce(claws, SERVICE_NAME, illusion_version, boot_time, HOSTNAME)
 
     await terminal_loop()
 

@@ -12,12 +12,19 @@ import asyncio
 import json
 import time
 
+import httpx
+
 from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from illusion_core import config as illusion_config
 from illusion_core.events import EventBus
+from illusion_core.fleet import (
+    PROBE_TIMEOUT_S,
+    cached_entry,
+    health_payload,
+)
 from illusion_core.uptime import service_uptime_ms, system_uptime_ms
 from claws.digikey_client import DigiKeyClient
 from claws.inventory_reader import SpreadsheetManager
@@ -58,6 +65,14 @@ class ScanRequest(BaseModel):
     barcode: str
 
 
+class Registration(BaseModel):
+    service: str
+    version: str
+    uptime_ms: int | None = None
+    system_uptime_ms: int | None = None
+    host: str | None = None
+
+
 def create_app(config_path="./claws.yaml"):
     config = illusion_config.load(
         config_path,
@@ -68,6 +83,17 @@ def create_app(config_path="./claws.yaml"):
     inventory = SpreadsheetManager(illusion_config.get(config, "claws.database_location"))
     events = EventBus()
     started_at = time.time()
+
+    # Which services make up the fleet, from static config. The set is fixed, so
+    # this is not service discovery -- and a static list is what lets `about`
+    # survive a claws restart. An in memory registry alone would forget every
+    # service that had already announced itself, and a kiosk idle since before
+    # the restart would never re-announce.
+    fleet = illusion_config.get(config, "claws.fleet", {}) or {}
+
+    # service -> {payload, at}. Last successful contact, used to report an
+    # assumed uptime when a service cannot be reached right now.
+    last_seen = {}
 
     digikey = None
 
@@ -123,6 +149,63 @@ def create_app(config_path="./claws.yaml"):
             "system_uptime_ms": system_uptime_ms(),
             "items": len(inventory.read_all()),
         }
+
+    async def _probe(name, url):
+        try:
+            async with httpx.AsyncClient(timeout=PROBE_TIMEOUT_S) as client:
+                response = await client.get(f"{url.rstrip('/')}/health")
+                response.raise_for_status()
+                payload = response.json()
+        except Exception:
+            return _from_cache(name)
+
+        last_seen[name] = {"payload": payload, "at": time.time()}
+
+        return {"service": name, "state": "ok", **payload}
+
+    def _from_cache(name):
+        cached = last_seen.get(name)
+        age_ms = 0 if cached is None else round((time.time() - cached["at"]) * 1000)
+
+        return cached_entry(name, cached, age_ms)
+
+    @app.post("/register", dependencies=auth)
+    async def register(registration: Registration):
+        """Announce on startup. Warms the cache so a restart shows up promptly.
+
+        Not the source of truth for who exists -- that is the static fleet
+        config -- just for what they last told us about themselves.
+        """
+        last_seen[registration.service] = {
+            "payload": registration.model_dump(exclude_none=True),
+            "at": time.time(),
+        }
+
+        return {"registered": registration.service}
+
+    @app.get("/status", dependencies=auth)
+    async def status():
+        """The whole fleet in one call.
+
+        Probes run concurrently, so the budget is the total rather than per
+        service and one dead host cannot stretch `about` past a few seconds.
+        """
+        results = await asyncio.gather(
+            *(_probe(name, url) for name, url in fleet.items()),
+            return_exceptions=True,
+        )
+
+        services = [
+            {"service": "claws", "state": "ok", **health_payload("claws", VERSION, started_at)}
+        ]
+
+        for name, result in zip(fleet, results):
+            if isinstance(result, BaseException):
+                services.append(_from_cache(name))
+            else:
+                services.append(result)
+
+        return {"services": services}
 
     @app.get("/items", dependencies=auth)
     async def list_items():

@@ -6,6 +6,13 @@ claws:
     port: 8080
   token:                 # shared bearer token, must match the frontend's config
   database_location: /var/lib/claws/inventory.db
+  # The fleet `about` reports on. A fixed set, so this is static config rather
+  # than service discovery -- and it is what lets `about` survive a claws
+  # restart, which would otherwise forget everything that had announced itself.
+  fleet:
+    illusion-bot: http://127.0.0.1:8090
+    lipgloss: http://eer-inventory:8081
+    illusion-kiosk: http://eer-inventory:8082
   digikey:
     enabled: false
     client_id:

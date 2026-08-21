@@ -14,6 +14,7 @@ import collections
 import io
 import os
 import signal
+import socket
 import time
 from importlib.metadata import version
 
@@ -26,6 +27,7 @@ from illusion_core import config as illusion_config
 from illusion_core import helpers as illusion_helpers
 from illusion_core.clients import ClawsClient, LipglossClient, ServiceUnavailable
 from illusion_core.commands import DB_Commands, Rows
+from illusion_core import fleet
 from illusion_bot import presentation
 
 illusion_version = version("illusion-bot")
@@ -34,6 +36,9 @@ boot_time = time.time()
 
 shutdown_event = asyncio.Event()
 shutdown_started = False
+
+health_server = None
+health_task = None
 
 # bot.wait_until_ready() can return before on_ready has finished, and on_ready
 # awaits a channel fetch partway through. Anything needing the forum channel
@@ -169,12 +174,37 @@ async def ping(interaction: discord.Interaction):
 
 @bot.tree.command(name="about", description="About illusion")
 async def about(interaction: discord.Interaction):
-    # Local today, but fleet status probes the other services with a few seconds
-    # of budget, which would outrun Discord's three second interaction window
+    # Probing every service takes a few seconds of budget, which would outrun
+    # Discord's three second interaction window
     await interaction.response.defer()
 
-    bot_uptime, system_uptime = await command_handler.handler_uptime()
-    await interaction.followup.send(f"illusion\nversion: {illusion_version}\nbot uptime: {bot_uptime}\nsystem uptime: {system_uptime}")
+    try:
+        status = await claws.status()
+    except ServiceUnavailable as e:
+        local = fleet.health_payload(SERVICE_NAME, illusion_version, boot_time)
+        embed = presentation.make_embed(
+            fleet.fleet_rows({"services": [{"state": "ok", **local}]}),
+            field_names=fleet.FLEET_FIELD_NAMES,
+            title="illusion",
+            description=f"Could not reach claws, showing only this machine.\n{e}",
+            colour=presentation.ALERT_COLOUR,
+            vertical=False,
+        )
+        await interaction.followup.send(embed=embed)
+        return
+
+    skew = fleet.version_skew(status)
+
+    embed = presentation.make_embed(
+        fleet.fleet_rows(status),
+        field_names=fleet.FLEET_FIELD_NAMES,
+        title="illusion",
+        description=skew or f"version {illusion_version}",
+        colour=presentation.ALERT_COLOUR if skew else presentation.EMBED_COLOUR,
+        vertical=False,
+    )
+
+    await interaction.followup.send(embed=embed)
 
 @bot.tree.command(name="resolve", description="Mark low stock warnings as resolved")
 @app_commands.describe(sku="Item Sku")
@@ -803,6 +833,17 @@ async def graceful_exit(reason: str = "unknown"):
 
     shutdown_event.set()
 
+    # Ask uvicorn to stop and give it a moment. Letting the loop tear it down
+    # instead leaves its lifespan task to die unhandled, which prints a
+    # CancelledError traceback on the way out.
+    if health_server is not None:
+        health_server.should_exit = True
+
+        try:
+            await asyncio.wait_for(health_task, timeout=3)
+        except (TimeoutError, asyncio.CancelledError, Exception):
+            pass
+
     try:
         await lipgloss.aclose()
     except Exception as e:
@@ -866,11 +907,31 @@ lipgloss = LipglossClient(
 
 command_handler = DB_Commands(claws, lipgloss, boot_time)
 
+SERVICE_NAME = "illusion-bot"
+HOSTNAME = socket.gethostname()
+
+# Co-located with claws on the VM, so this binds loopback and never touches the
+# network
+HEALTH_HOST = illusion_config.get(config, "bot.health.host", "127.0.0.1")
+HEALTH_PORT = illusion_config.get(config, "bot.health.port", 8090)
+
 
 @bot.event
 async def setup_hook():
     install_signal_handlers()
 
+    global health_server, health_task
+
+    if HEALTH_PORT:
+        health_server = fleet.make_health_server(
+            fleet.make_health_app(SERVICE_NAME, illusion_version, boot_time,
+                                  {"host": HOSTNAME}),
+            HEALTH_HOST,
+            HEALTH_PORT,
+        )
+        health_task = bot.loop.create_task(health_server.serve())
+
+    bot.loop.create_task(fleet.announce(claws, SERVICE_NAME, illusion_version, boot_time, HOSTNAME))
     bot.loop.create_task(claws_event_loop())
     bot.loop.create_task(reconcile_loop())
 

@@ -228,6 +228,13 @@ class ClawsClient(BaseClient):
     async def items_by_tag(self, tag):
         return await self.get(f"/tags/{tag}/items")
 
+    async def status(self):
+        """The whole fleet: claws plus every service it probes."""
+        return await self.get("/status")
+
+    async def register(self, payload):
+        return await self.post("/register", json=payload)
+
     async def low_threads(self):
         """Items whose low-stock thread state needs attention, tagged with the action."""
         return await self.get("/low-threads")

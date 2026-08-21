@@ -8,6 +8,9 @@ bot:
     token:                       # Discord bot token
     server_id:                   # Guild id
     fourm_id:                    # Forum channel id for low-stock threads
+  health:
+    host: 127.0.0.1    # co-located with claws, so loopback is enough
+    port: 8090
   printer:
     enabled: true                # gates the print commands
   lipgloss:
