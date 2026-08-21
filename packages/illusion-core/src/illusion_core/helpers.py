@@ -1,3 +1,11 @@
+QUEUE_FIELD_NAMES = {
+    "JOB_ID": "Job",
+    "DESCRIPTION": "Label",
+    "LABELS": "Labels",
+    "STATE": "State",
+    "SOURCE": "Source",
+}
+
 FIELD_NAMES = {
     "SKU": "SKU",
     "NAME": "Name",

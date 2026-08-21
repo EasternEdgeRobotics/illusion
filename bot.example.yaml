@@ -1,0 +1,15 @@
+# Copy to bot.yaml and fill in. bot.yaml is gitignored.
+# Runs on the NAS VM, beside claws.
+bot:
+  claws:
+    url: http://127.0.0.1:8080   # claws is on this same VM
+    token:                       # must match claws.yaml's token
+  discord:
+    token:                       # Discord bot token
+    server_id:                   # Guild id
+    fourm_id:                    # Forum channel id for low-stock threads
+  printer:
+    enabled: true                # gates the print commands
+  lipgloss:
+    url: http://eer-inventory:8081   # tailnet address of the closet laptop
+    token:                           # must match lipgloss.yaml's token

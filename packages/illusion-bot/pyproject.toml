@@ -1,19 +1,17 @@
 [project]
-name = "illusion"
+name = "illusion-bot"
 version = "1.5.0"
-description = "Discord bot and terminal kiosk for illusion"
+description = "illusion, the Discord bot"
 requires-python = ">=3.14"
 dependencies = [
     "illusion-core",
-    "claws",
-    "lipgloss",
-    "click>=8.4.2",
     "discord-py>=2.7.1",
-    "pyyaml>=6.0.3",
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.34",
 ]
 
 [project.scripts]
-illusion = "illusion.__main__:main"
+illusion-bot = "illusion_bot.__main__:main"
 
 [build-system]
 requires = ["hatchling"]

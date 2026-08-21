@@ -2,7 +2,8 @@
 members = ["packages/*"]
 
 [tool.uv.sources]
-illusion = { workspace = true }
+illusion-bot = { workspace = true }
+illusion-kiosk = { workspace = true }
 illusion-core = { workspace = true }
 claws = { workspace = true }
 lipgloss = { workspace = true }
@@ -10,7 +11,8 @@ niimprint = { git = "https://github.com/Peyton-C/niimprint" }
 
 [dependency-groups]
 dev = [
-    "illusion",
+    "illusion-bot",
+    "illusion-kiosk",
     "claws",
     "lipgloss",
     "illusion-core",

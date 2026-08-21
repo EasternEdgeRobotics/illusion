@@ -5,16 +5,18 @@ requires-python = ">=3.14"
 [manifest]
 members = [
     "claws",
-    "illusion",
+    "illusion-bot",
     "illusion-core",
+    "illusion-kiosk",
     "lipgloss",
 ]
 
 [manifest.dependency-groups]
 dev = [
     { name = "claws", editable = "packages/claws" },
-    { name = "illusion", editable = "packages/illusion" },
+    { name = "illusion-bot", editable = "packages/illusion-bot" },
     { name = "illusion-core", editable = "packages/illusion-core" },
+    { name = "illusion-kiosk", editable = "packages/illusion-kiosk" },
     { name = "lipgloss", editable = "packages/lipgloss" },
 ]
 
@@ -401,26 +403,22 @@ wheels = [
 ]
 
 [[package]]
-name = "illusion"
+name = "illusion-bot"
 version = "1.5.0"
-source = { editable = "packages/illusion" }
+source = { editable = "packages/illusion-bot" }
 dependencies = [
-    { name = "claws" },
-    { name = "click" },
     { name = "discord-py" },
+    { name = "fastapi" },
     { name = "illusion-core" },
-    { name = "lipgloss" },
-    { name = "pyyaml" },
+    { name = "uvicorn", extra = ["standard"] },
 ]
 
 [package.metadata]
 requires-dist = [
-    { name = "claws", editable = "packages/claws" },
-    { name = "click", specifier = ">=8.4.2" },
     { name = "discord-py", specifier = ">=2.7.1" },
+    { name = "fastapi", specifier = ">=0.115" },
     { name = "illusion-core", editable = "packages/illusion-core" },
-    { name = "lipgloss", editable = "packages/lipgloss" },
-    { name = "pyyaml", specifier = ">=6.0.3" },
+    { name = "uvicorn", extras = ["standard"], specifier = ">=0.34" },
 ]
 
 [[package]]
@@ -436,6 +434,23 @@ dependencies = [
 requires-dist = [
     { name = "httpx", specifier = ">=0.28" },
     { name = "pyyaml", specifier = ">=6.0.3" },
+]
+
+[[package]]
+name = "illusion-kiosk"
+version = "1.5.0"
+source = { editable = "packages/illusion-kiosk" }
+dependencies = [
+    { name = "fastapi" },
+    { name = "illusion-core" },
+    { name = "uvicorn", extra = ["standard"] },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "fastapi", specifier = ">=0.115" },
+    { name = "illusion-core", editable = "packages/illusion-core" },
+    { name = "uvicorn", extras = ["standard"], specifier = ">=0.34" },
 ]
 
 [[package]]
