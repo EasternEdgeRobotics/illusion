@@ -169,8 +169,12 @@ async def ping(interaction: discord.Interaction):
 
 @bot.tree.command(name="about", description="About illusion")
 async def about(interaction: discord.Interaction):
+    # Local today, but fleet status probes the other services with a few seconds
+    # of budget, which would outrun Discord's three second interaction window
+    await interaction.response.defer()
+
     bot_uptime, system_uptime = await command_handler.handler_uptime()
-    await interaction.response.send_message(f"illusion\nversion: {illusion_version}\nbot uptime: {bot_uptime}\nsystem uptime: {system_uptime}")
+    await interaction.followup.send(f"illusion\nversion: {illusion_version}\nbot uptime: {bot_uptime}\nsystem uptime: {system_uptime}")
 
 @bot.tree.command(name="resolve", description="Mark low stock warnings as resolved")
 @app_commands.describe(sku="Item Sku")
