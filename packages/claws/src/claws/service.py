@@ -77,6 +77,29 @@ class Registration(BaseModel):
     host: str | None = None
 
 
+def amount_problem(item, amount):
+    """Whether this amount makes sense for how the item is tracked.
+
+    KANBAN items have no quantity at all -- a decrease just marks them low and
+    the amount is discarded -- so there is nothing to refuse. QUANTITY items are
+    counted in whole units, so a fraction is a mistake worth catching rather
+    than silently rounding away. HYBRID items are measured rather than counted,
+    so fractions are the entire point of the mode.
+
+    Returns the reason as a string, or None if the amount is fine.
+    """
+    if amount is None or item["TRACKING_MODE"] != "QUANTITY":
+        return None
+
+    if float(amount) != int(float(amount)):
+        return (
+            f"{item['SKU']} is tracked per item, so the amount has to be a whole "
+            f"number. HYBRID tracking is the one that takes fractions."
+        )
+
+    return None
+
+
 def create_app(config_path="./claws.yaml"):
     config = illusion_config.load(
         config_path,
@@ -287,7 +310,10 @@ def create_app(config_path="./claws.yaml"):
 
     @app.post("/items/{sku}/decrease", dependencies=auth)
     async def decrease(sku: str, request: Amount):
-        _item_or_404(sku)
+        problem = amount_problem(_item_or_404(sku), request.amount)
+
+        if problem:
+            return {"rejected": problem}
 
         result = inventory.decrease_item(sku, request.amount)
         inventory.save()
@@ -300,7 +326,13 @@ def create_app(config_path="./claws.yaml"):
 
     @app.post("/items/{sku}/increase", dependencies=auth)
     async def increase(sku: str, request: Amount):
-        was_low = bool(_item_or_404(sku)["LOW"])
+        old = _item_or_404(sku)
+        problem = amount_problem(old, request.amount)
+
+        if problem:
+            return {"rejected": problem}
+
+        was_low = bool(old["LOW"])
 
         item = inventory.increase_item(sku, float(request.amount or 1))
         inventory.save()

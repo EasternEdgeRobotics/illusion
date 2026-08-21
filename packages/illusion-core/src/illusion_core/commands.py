@@ -182,6 +182,11 @@ class DB_Commands:
         if result is None:
             return f"Invalid sku: {sku}"
 
+        # claws decides whether an amount suits how the item is tracked, since
+        # that is a rule about stock and it is the service that knows the mode
+        if result.get("rejected"):
+            return result["rejected"]
+
         item = result["item"]
         went_low = result["transition"] == "low"
 
@@ -217,6 +222,9 @@ class DB_Commands:
 
         if result is None:
             return f"Invalid sku: {sku}"
+
+        if result.get("rejected"):
+            return result["rejected"]
 
         item = result["item"]
         unit = item["UNIT"] or "units"
