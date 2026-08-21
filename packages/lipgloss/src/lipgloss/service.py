@@ -18,7 +18,7 @@ from pydantic import BaseModel, Field
 from illusion_core import config as illusion_config
 from illusion_core.uptime import service_uptime_ms, system_uptime_ms
 from lipgloss import printer
-from lipgloss.events import EventBus
+from illusion_core.events import EventBus
 from lipgloss.label_maker import LabelMaker, LABEL_STYLES
 from lipgloss.print_queue import MAX_COPIES, PrintQueue
 from lipgloss.printer import PrinterUnavailable
