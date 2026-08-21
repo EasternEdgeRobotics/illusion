@@ -1,6 +1,7 @@
 # Splitting illusion into claws / lipgloss / illusion
 
-Status: phases 0, 1 and 2 done. Target version 1.5.0.
+Status: phases 0 to 3 done. Phase 4 (splitting bot from kiosk) is next.
+Target version 1.5.0.
 
 Not 2.0.0: every slash command and kiosk command survives the split unchanged,
 so from a user's seat nothing happens. The upheaval is entirely in deployment,
@@ -369,7 +370,12 @@ Original text: Wrap the print queue in FastAPI, write
 `http://127.0.0.1:8081`. Same machine, so a failure here is a bug in the client,
 not the network. Deploy under OpenRC on the laptop.
 
-**Phase 3 -- claws becomes a service.** Same shape: FastAPI over
+**Phase 3 -- claws becomes a service. DONE.** Two things emerged that were not
+in the original plan: responses can no longer name the low-stock thread they
+triggered, and the bot has to reconcile orphaned threads at startup because
+events are not replayed.
+
+Original text: Same shape: FastAPI over
 `SpreadsheetManager`, `ClawsClient` in illusion-core, illusion runs against
 `http://127.0.0.1:8080` first, still on the laptop. Then move the database (see
 below) and repoint at the tailnet address. This is the phase where the low-stock
@@ -498,14 +504,8 @@ per-service rather than one global shared secret.
 
 ## Deferred
 
-- **Terminal REPL hardening.** The command dispatch in `terminal_loop` is not
-  wrapped against unexpected exceptions, so a handler that raises something
-  other than `ServiceUnavailable` ends the loop. It is safe today because the
-  print handlers catch service errors and claws is still in-process, but Phase 3
-  moves every database command onto HTTP and must add this. Deliberately not
-  done yet: wrapping it means reindenting ~100 lines, and Phase 4 moves the
-  whole function into the kiosk package anyway, so doing it now would churn the
-  same code twice.
+Nothing outstanding. The terminal REPL hardening deferred from Phase 2 was done
+in Phase 3, as planned.
 
 ## Open items
 
