@@ -15,6 +15,11 @@ import socket
 import time
 from importlib.metadata import version
 
+try:
+    import readline
+except ImportError:
+    print("readline not installed, the prompt will have no history or line editing")
+
 from illusion_core import config as illusion_config
 from illusion_core import helpers as illusion_helpers
 from illusion_core.clients import ClawsClient, LipglossClient, ServiceUnavailable
