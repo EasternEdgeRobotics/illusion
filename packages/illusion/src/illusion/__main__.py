@@ -1215,12 +1215,14 @@ async def claws_event_loop():
     await channel_ready.wait()
 
     while not shutdown_event.is_set():
-        # Every reconnect starts with a reconcile, since whatever happened while
-        # the stream was down was never queued for us
-        await reconcile_low_threads()
-
         try:
             async for event in claws.events():
+                # Reconcile once subscribed, never before: anything that happens
+                # while we catch up is queued rather than lost
+                if event["event"] == "stream.connected":
+                    await reconcile_low_threads(quiet=True)
+                    continue
+
                 try:
                     if event["event"] == "item.low":
                         await command_handler.create_low_thread(event["sku"], event["item"])
@@ -1304,6 +1306,9 @@ async def lipgloss_event_loop():
     while not shutdown_event.is_set():
         try:
             async for event in lipgloss.events():
+                if event["event"] == "stream.connected":
+                    continue
+
                 handler = notifiers.get(event.get("reply_to"))
 
                 if handler is None:

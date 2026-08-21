@@ -93,8 +93,25 @@ class BaseClient:
         return await self.get("/health")
 
     async def events(self):
-        """Yield events off the service's SSE stream until the connection drops."""
+        """Yield events off the service's SSE stream until the connection drops.
+
+        The first item is always a stream.connected sentinel. The server
+        subscribes before it sends any headers, so by the time this yields,
+        anything published from that moment on is queued for us. Consumers use
+        it to catch up on missed state without racing the subscription: catching
+        up first and subscribing second would drop everything published in
+        between, every single reconnect.
+        """
         async with self._client.stream("GET", "/events", timeout=None) as response:
+            if response.status_code >= 400:
+                raise ServiceUnavailable(
+                    f"{self._name} refused the event stream ({response.status_code})",
+                    status_code=response.status_code,
+                    service=self._name,
+                )
+
+            yield {"event": "stream.connected"}
+
             async for line in response.aiter_lines():
                 if line.startswith("data: "):
                     yield json.loads(line[6:])
