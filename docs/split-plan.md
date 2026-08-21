@@ -1,7 +1,7 @@
 # Splitting illusion into claws / lipgloss / illusion
 
-Status: phases 0 to 3 done. Phase 4 (splitting bot from kiosk) is next.
-Target version 1.5.0.
+Status: phases 0 to 4 done. The split itself is finished. Phase 5
+(fleet status and deployment) is what remains. Target version 1.5.0.
 
 Not 2.0.0: every slash command and kiosk command survives the split unchanged,
 so from a user's seat nothing happens. The upheaval is entirely in deployment,
@@ -381,7 +381,12 @@ Original text: Same shape: FastAPI over
 below) and repoint at the tailnet address. This is the phase where the low-stock
 event stream replaces the direct `create_low_thread` call.
 
-**Phase 4 -- split the frontends.** illusion.py finally splits into
+**Phase 4 -- split the frontends. DONE.** The shared command layer moved to
+illusion-core first, with the handlers that used to render returning data for
+each frontend to format, since formatting an embed in core would have dragged
+discord back into a package claws and lipgloss depend on.
+
+Original text: illusion.py finally splits into
 illusion-bot and illusion-kiosk, both now thin HTTP clients. Bot moves to the
 NAS VM; kiosk stays on the laptop.
 
@@ -502,10 +507,22 @@ Each host gets its own file; the shared loader lives in illusion-core.
 No secret is duplicated across hosts except the two bearer tokens, and those are
 per-service rather than one global shared secret.
 
-## Deferred
+## Remaining work
 
-Nothing outstanding. The terminal REPL hardening deferred from Phase 2 was done
-in Phase 3, as planned.
+- **Fleet status.** The `about` command still reports only the local service.
+  The design is written up above and unchanged; it is the last feature.
+- **Deployment.** OpenRC services on both hosts, the udev rule, the backup cron,
+  and moving the database onto the VM. None of it is written yet.
+
+## Known cost
+
+The kiosk package kept only 16% of its git blame, against 100% for the files
+that were pure moves. `terminal_loop` came through intact, but
+`handler_command_help` was dedented from a method to a module function, and
+dedenting rewrites every line so copy detection cannot follow it. Doing the
+extraction as two commits -- copy verbatim, then dedent -- would have preserved
+it. Roughly 106 lines of static help text, so it was not worth rewriting
+history to recover.
 
 ## Open items
 
