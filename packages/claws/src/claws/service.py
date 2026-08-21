@@ -77,6 +77,26 @@ class Registration(BaseModel):
     host: str | None = None
 
 
+# Fields that count discrete things, so they cannot be fractional on an item
+# tracked per item. LOW_THRESHOLD and ORDER_QUANTITY are deliberately not here:
+# a threshold of 2.5 is only an odd way of writing 3 and does no harm, and
+# ORDER_QUANTITY describes a purchase rather than stock on hand.
+WHOLE_NUMBER_FIELDS = ("QUANTITY_ON_HAND", "DECREASE_AMOUNT")
+
+FRACTION_HINT = "HYBRID tracking is the one that takes fractions."
+
+
+def _is_fractional(value):
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        # Not a number at all, which the database layer rejects with a better
+        # message than anything this could produce
+        return False
+
+    return number != int(number)
+
+
 def amount_problem(item, amount):
     """Whether this amount makes sense for how the item is tracked.
 
@@ -91,13 +111,39 @@ def amount_problem(item, amount):
     if amount is None or item["TRACKING_MODE"] != "QUANTITY":
         return None
 
-    if float(amount) != int(float(amount)):
+    if _is_fractional(amount):
         return (
             f"{item['SKU']} is tracked per item, so the amount has to be a whole "
-            f"number. HYBRID tracking is the one that takes fractions."
+            f"number. {FRACTION_HINT}"
         )
 
     return None
+
+
+def fields_problem(tracking_mode, values, sku=None):
+    """The same rule, for values being written rather than an amount applied.
+
+    Without this, the amount check is trivially bypassed: a fractional
+    DECREASE_AMOUNT stored on the item is used by a bare `decrease` with no
+    amount of its own, and set_stock would happily write a fractional count that
+    decrease refuses to produce.
+    """
+    if tracking_mode != "QUANTITY":
+        return None
+
+    bad = [
+        f"{field} ({values[field]})"
+        for field in WHOLE_NUMBER_FIELDS
+        if values.get(field) is not None and _is_fractional(values[field])
+    ]
+
+    if not bad:
+        return None
+
+    subject = sku or "This item"
+    requirement = "must be a whole number" if len(bad) == 1 else "must be whole numbers"
+
+    return f"{subject} is tracked per item, so {' and '.join(bad)} {requirement}. {FRACTION_HINT}"
 
 
 def create_app(config_path="./claws.yaml"):
@@ -284,6 +330,13 @@ def create_app(config_path="./claws.yaml"):
 
     @app.post("/items", dependencies=auth)
     async def add_item(request: NewItem):
+        problem = fields_problem(
+            request.item.get("TRACKING_MODE") or "KANBAN", request.item
+        )
+
+        if problem:
+            return {"rejected": problem}
+
         sku = inventory.add_item(request.item)
         inventory.save()
 
@@ -291,7 +344,20 @@ def create_app(config_path="./claws.yaml"):
 
     @app.patch("/items/{sku}", dependencies=auth)
     async def update_item(sku: str, request: Updates):
-        was_low = bool(_item_or_404(sku)["LOW"])
+        old = _item_or_404(sku)
+
+        # The mode may be changing in this same request, so check against what
+        # the item is about to become rather than what it is now
+        problem = fields_problem(
+            request.updates.get("TRACKING_MODE") or old["TRACKING_MODE"],
+            request.updates,
+            sku,
+        )
+
+        if problem:
+            return {"rejected": problem}
+
+        was_low = bool(old["LOW"])
 
         inventory.update_item(sku, request.updates)
         inventory.save()
@@ -341,7 +407,15 @@ def create_app(config_path="./claws.yaml"):
 
     @app.put("/items/{sku}/stock", dependencies=auth)
     async def set_stock(sku: str, request: Quantity):
-        was_low = bool(_item_or_404(sku)["LOW"])
+        old = _item_or_404(sku)
+        problem = fields_problem(
+            old["TRACKING_MODE"], {"QUANTITY_ON_HAND": request.quantity}, sku
+        )
+
+        if problem:
+            return {"rejected": problem}
+
+        was_low = bool(old["LOW"])
 
         item = inventory.set_stock(sku, request.quantity)
         inventory.save()

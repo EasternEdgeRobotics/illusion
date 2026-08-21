@@ -86,7 +86,12 @@ class DB_Commands:
             "NOTES": notes,
         }
         
-        new_sku = await self.claws.add_item(new_item)
+        created = await self.claws.add_item(new_item)
+
+        if created.get("rejected"):
+            return created["rejected"]
+
+        new_sku = created["sku"]
 
         if digikey_part_number != None:
             digikey_link = f"https://www.digikey.ca/en/products/result?keywords={digikey_part_number}"
@@ -251,6 +256,9 @@ class DB_Commands:
         if result is None:
             return f"Invalid sku: {sku}"
 
+        if result.get("rejected"):
+            return result["rejected"]
+
         item = result["item"]
         unit = item["UNIT"] or "units"
 
@@ -348,6 +356,9 @@ class DB_Commands:
         if result is None:
             return f"Invalid sku: {sku}"
 
+        if result.get("rejected"):
+            return result["rejected"]
+
         # Automatically adds a digikey link if a digikey part number was added.
         # Only after the update lands, so an invalid sku does not leave a vendor
         # row behind on an item that was never touched.
@@ -399,9 +410,12 @@ class DB_Commands:
             "NOTES": None,
         }
 
-        new_sku = await self.claws.add_item(new_item)
+        created = await self.claws.add_item(new_item)
 
-        return f"New item {new_sku} created from {dkpn} with {quantity} on hand"
+        if created.get("rejected"):
+            return created["rejected"]
+
+        return f"New item {created['sku']} created from {dkpn} with {quantity} on hand"
 
     @reports_service_errors
     async def handler_get_tags(self):
