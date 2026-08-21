@@ -8,6 +8,7 @@ dependencies = [
     # embeds. Phase 2 moves make_embed/make_vendor_buttons into the illusion
     # frontend and drops this.
     "discord-py>=2.7.1",
+    "pyyaml>=6.0.3",
 ]
 
 [build-system]

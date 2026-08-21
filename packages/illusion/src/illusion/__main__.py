@@ -3,8 +3,8 @@ from discord import app_commands
 from discord.ext import commands
 from claws.inventory_reader import SpreadsheetManager
 import asyncio
-import yaml
 from importlib.metadata import version
+from illusion_core import config as illusion_config
 from illusion_core import helpers as illusion_helpers
 from PIL import Image
 import os, io, platform, signal
@@ -1416,8 +1416,38 @@ async def setup_hook():
     if config["illusion"]["printer"]["niimbot"]["enabled"]:
         printqueue.start()
 
-with open("./config.yaml", "r") as file:
-    config = yaml.safe_load(file)
+CONFIG_PATH = os.environ.get("ILLUSION_CONFIG", "./config.yaml")
+
+try:
+    config = illusion_config.load(CONFIG_PATH)
+
+    required = [
+        "illusion.database_location",
+        "illusion.discord.token",
+        "illusion.discord.server_id",
+        "illusion.discord.fourm_id",
+    ]
+
+    # Feature specific fields are only demanded when the feature is switched on,
+    # so a machine with no printer or no DigiKey access still starts. Everything
+    # is collected into one list first so a single run reports every missing
+    # field, rather than turning startup into fix-one-discover-another.
+    if illusion_config.get(config, "illusion.printer.niimbot.enabled"):
+        required += [
+            "illusion.printer.niimbot.port",
+            "illusion.printer.niimbot.font_path",
+        ]
+
+    if illusion_config.get(config, "illusion.digikey.enabled"):
+        required += [
+            "illusion.digikey.client_id",
+            "illusion.digikey.client_secret",
+        ]
+
+    illusion_config.require(config, required, source=CONFIG_PATH)
+except illusion_config.ConfigError as e:
+    print(e)
+    raise SystemExit(1)
 
 TOKEN = config["illusion"]["discord"]["token"]
 GUILD_ID = config["illusion"]["discord"]["server_id"]
@@ -1430,7 +1460,7 @@ printqueue = PrintQueue(config["illusion"]["printer"]["niimbot"]["port"], "d110"
 
 # Digikey support
 if config["illusion"]["digikey"]["enabled"] == True:
-    dk = DigiKeyClient("./config.yaml")
+    dk = DigiKeyClient(CONFIG_PATH)
 
 
 def main():

@@ -320,10 +320,14 @@ version = "1.5.0"
 source = { editable = "packages/illusion-core" }
 dependencies = [
     { name = "discord-py" },
+    { name = "pyyaml" },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "discord-py", specifier = ">=2.7.1" }]
+requires-dist = [
+    { name = "discord-py", specifier = ">=2.7.1" },
+    { name = "pyyaml", specifier = ">=6.0.3" },
+]
 
 [[package]]
 name = "lipgloss"

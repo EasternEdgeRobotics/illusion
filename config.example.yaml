@@ -1,0 +1,27 @@
+# Copy to config.yaml and fill in. config.yaml is gitignored.
+# Every service validates its own required fields at startup and names
+# any that are missing, so an empty value fails loudly rather than at
+# first use.
+
+illusion:
+  database_location: ./inventory.db
+  discord:
+    token:            # Discord bot token
+    server_id:        # Guild id
+    fourm_id:         # Forum channel id for low-stock threads
+  terminal:
+    log_to_term: false
+  printer:
+    niimbot:
+      enabled: true
+      port:           # /dev/niimbot on Alpine, /dev/cu.usbmodem* on macOS
+      font_path:      # TTF used for label text
+      font_size: 14
+  digikey:
+    enabled: true
+    client_id:        # DigiKey API client id
+    client_secret:    # DigiKey API client secret
+    tokens:
+      access_token:   # written by digikey_client, leave blank
+      refresh_token:  # written by digikey_client, leave blank
+      expires_at:     # written by digikey_client, leave blank
