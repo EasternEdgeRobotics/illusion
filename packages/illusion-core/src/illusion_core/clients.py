@@ -211,6 +211,10 @@ class ClawsClient(BaseClient):
     async def items_by_tag(self, tag):
         return await self.get(f"/tags/{tag}/items")
 
+    async def low_threads(self):
+        """Items whose low-stock thread state needs attention, tagged with the action."""
+        return await self.get("/low-threads")
+
     async def item_tags(self, sku):
         """None when there is no such item, a list otherwise."""
         return await self.or_none("GET", f"/items/{sku}/tags")

@@ -25,6 +25,11 @@ except:
 MAX_COPIES = 100
 
 shutdown_event = asyncio.Event()
+
+# bot.wait_until_ready() can return before on_ready has finished, and on_ready
+# awaits a channel fetch partway through. Anything that needs the forum channel
+# waits on this instead, so a reconcile at startup cannot race past it.
+channel_ready = asyncio.Event()
 shutdown_started = False
 
 illusion_version = version("illusion")
@@ -290,6 +295,11 @@ class DB_Commands:
         """
         global channel
 
+        # Belt and braces: the callers wait on channel_ready, but a thread
+        # cannot be opened without somewhere to open it
+        if channel is None:
+            return None
+
         if item is None:
             item = await claws.get_item(sku)
 
@@ -309,16 +319,21 @@ class DB_Commands:
     async def archive_low_thread(self, sku, item=None):
         global bot
 
+        # channel is only set once Discord is connected, so it doubles as the
+        # check for whether there is any point looking a thread up
+        if channel is None:
+            return False, "Not connected to Discord."
+
         if item is None:
             item = await claws.get_item(sku)
 
         if item is None:
-            return "No item found."
+            return False, "No item found."
 
         thread_id = item.get("LOW_THREAD_ID")
 
         if not thread_id:
-            return "No low-stock thread was stored for this item."
+            return False, "No low-stock thread was stored for this item."
 
         try:
             thread = bot.get_channel(int(thread_id))
@@ -327,11 +342,12 @@ class DB_Commands:
                 thread = await bot.fetch_channel(int(thread_id))
 
         except discord.NotFound:
+            # The pointer is cleared, so the drift is gone either way
             await claws.set_low_thread(sku, None)
-            return "Stored thread no longer exists."
+            return True, "Stored thread no longer exists, cleared the reference."
 
         if not isinstance(thread, discord.Thread):
-            return "Stored channel is not a thread."
+            return False, "Stored channel is not a thread."
 
         await thread.edit(
             archived=True,
@@ -340,7 +356,7 @@ class DB_Commands:
 
         await claws.set_low_thread(sku, None)
 
-        return "Low-stock thread archived."
+        return True, "Low-stock thread archived."
 
     async def handler_generate_barcode(self, sku):
         return await lipgloss.render(style="classic_barcode", sku=sku, width=350, height=280, rotate=0)
@@ -881,6 +897,8 @@ async def on_ready():
     bot.tree.copy_global_to(guild=guild)
     await bot.tree.sync(guild=guild)
 
+    channel_ready.set()
+
 
 
 @bot.tree.command(name="ping", description="Check bot latency")
@@ -1172,6 +1190,12 @@ def register_notifier(token, handler):
         notifiers.popitem(last=False)
 
 
+# Events are the fast path, reconciliation is the correctness guarantee. Nothing
+# is replayed on reconnect, and a subscriber that falls far enough behind is
+# evicted outright, so the bot never assumes the stream told it everything.
+RECONCILE_INTERVAL = 900
+
+
 async def claws_event_loop():
     """Own the low-stock thread lifecycle, driven by claws.
 
@@ -1181,11 +1205,13 @@ async def claws_event_loop():
     connected to Discord reacts to it, so a scan at the kiosk still opens a
     thread even though the kiosk cannot talk to Discord at all.
     """
-    await bot.wait_until_ready()
-
-    await reconcile_low_threads()
+    await channel_ready.wait()
 
     while not shutdown_event.is_set():
+        # Every reconnect starts with a reconcile, since whatever happened while
+        # the stream was down was never queued for us
+        await reconcile_low_threads()
+
         try:
             async for event in claws.events():
                 try:
@@ -1204,30 +1230,60 @@ async def claws_event_loop():
         await asyncio.sleep(5)
 
 
-async def reconcile_low_threads():
-    """Catch up on transitions that happened while the bot was down.
+async def reconcile_loop():
+    """Periodic safety net against a silently missed event."""
+    await channel_ready.wait()
 
-    Events are not replayed, so an item that went low, or stopped being low,
-    while Discord was unreachable would otherwise be stuck with a missing or an
-    orphaned thread forever. Cheap to check: it is one pass over the inventory
-    at startup.
+    while not shutdown_event.is_set():
+        await asyncio.sleep(RECONCILE_INTERVAL)
+
+        if shutdown_event.is_set():
+            return
+
+        await reconcile_low_threads(quiet=True)
+
+
+async def reconcile_low_threads(quiet=False):
+    """Bring Discord back in line with claws, which is the source of truth.
+
+    claws decides what needs doing; this only carries it out. Catches
+    transitions that happened while the bot was down, and any event lost because
+    the stream dropped or this subscriber was evicted for falling behind.
     """
     try:
-        items = await claws.read_all()
+        rows = await claws.low_threads()
     except ServiceUnavailable as e:
         print(f"Could not reconcile low-stock threads: {e}")
         return
 
-    for item in items:
+    fixed = 0
+
+    for row in rows:
+        item = row["item"]
+        sku = item["SKU"]
+
         try:
-            if item["LOW"] and not item["LOW_THREAD_ID"]:
-                print(f"Reconciling {item['SKU']}: low with no thread, creating one")
-                await command_handler.create_low_thread(item["SKU"], item)
-            elif not item["LOW"] and item["LOW_THREAD_ID"]:
-                print(f"Reconciling {item['SKU']}: not low but thread still open, archiving")
-                await command_handler.archive_low_thread(item["SKU"], item)
+            if row["action"] == "create":
+                thread_name = await command_handler.create_low_thread(sku, item)
+
+                if thread_name:
+                    print(f"Reconciled {sku}: was low with no thread, opened {thread_name}")
+                    fixed += 1
+                else:
+                    print(f"Could not reconcile {sku}: thread was not created")
+            elif row["action"] == "archive":
+                archived, detail = await command_handler.archive_low_thread(sku, item)
+
+                if archived:
+                    print(f"Reconciled {sku}: no longer low. {detail}")
+                    fixed += 1
+                else:
+                    print(f"Could not reconcile {sku}: {detail}")
         except Exception as e:
-            print(f"Could not reconcile {item['SKU']}: {e}")
+            print(f"Could not reconcile {sku}: {e}")
+
+    if not quiet or fixed:
+        print(f"Low-stock threads reconciled: {len(rows)} tracked, {fixed} corrected")
 
 
 async def lipgloss_event_loop():
@@ -1499,6 +1555,7 @@ async def setup_hook():
     bot.loop.create_task(terminal_loop())
 
     bot.loop.create_task(claws_event_loop())
+    bot.loop.create_task(reconcile_loop())
 
     if PRINTING_ENABLED:
         bot.loop.create_task(lipgloss_event_loop())
@@ -1538,6 +1595,8 @@ PRINTING_ENABLED = bool(illusion_config.get(config, "illusion.printer.niimbot.en
 TOKEN = config["illusion"]["discord"]["token"]
 GUILD_ID = config["illusion"]["discord"]["server_id"]
 FORUM_CHANNEL_ID = config["illusion"]["discord"]["fourm_id"] 
+
+channel = None
 
 command_handler = DB_Commands()
 claws = ClawsClient(

@@ -264,13 +264,13 @@ def create_app(config_path="./lipgloss.yaml"):
 
     @app.get("/events", dependencies=[Depends(require_token)])
     async def event_stream():
-        queue = events.subscribe()
+        subscription = events.subscribe()
 
         async def stream():
             try:
-                while True:
+                while not subscription.dropped.is_set():
                     try:
-                        event = await asyncio.wait_for(queue.get(), timeout=20)
+                        event = await asyncio.wait_for(subscription.queue.get(), timeout=20)
                     except TimeoutError:
                         # Keeps the connection from being reaped by anything in
                         # between while the printer is idle
@@ -279,7 +279,7 @@ def create_app(config_path="./lipgloss.yaml"):
 
                     yield f"data: {json.dumps(event)}\n\n"
             finally:
-                events.unsubscribe(queue)
+                events.unsubscribe(subscription)
 
         return StreamingResponse(stream(), media_type="text/event-stream")
 

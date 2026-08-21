@@ -128,6 +128,42 @@ def create_app(config_path="./claws.yaml"):
     async def list_items():
         return inventory.read_all()
 
+    @app.get("/low-threads", dependencies=auth)
+    async def low_threads():
+        """Every item whose low-stock thread state is worth looking at.
+
+        The source of truth for which threads should exist. Returns the items
+        that are low, or that still carry a thread id, each tagged with what
+        needs doing:
+
+          create   low, but no thread was ever opened
+          archive  no longer low, but its thread is still open
+          ok       low with a thread, which is the steady state
+
+        The predicate lives here rather than in the bot because it is a
+        statement about inventory, and because the bot is not the only thing
+        that might ever want to ask.
+        """
+        rows = []
+
+        for item in inventory.read_all():
+            low = bool(item["LOW"])
+            thread_id = item["LOW_THREAD_ID"]
+
+            if not low and not thread_id:
+                continue
+
+            if low and not thread_id:
+                action = "create"
+            elif not low and thread_id:
+                action = "archive"
+            else:
+                action = "ok"
+
+            rows.append({"action": action, "item": item})
+
+        return rows
+
     @app.get("/items/by-dkpn/{dkpn}", dependencies=auth)
     async def item_by_dkpn(dkpn: str):
         return inventory.get_item_by_dkpn(dkpn)
@@ -265,20 +301,20 @@ def create_app(config_path="./claws.yaml"):
 
     @app.get("/events", dependencies=auth)
     async def event_stream():
-        queue = events.subscribe()
+        subscription = events.subscribe()
 
         async def stream():
             try:
-                while True:
+                while not subscription.dropped.is_set():
                     try:
-                        event = await asyncio.wait_for(queue.get(), timeout=20)
+                        event = await asyncio.wait_for(subscription.queue.get(), timeout=20)
                     except TimeoutError:
                         yield ": keepalive\n\n"
                         continue
 
                     yield f"data: {json.dumps(event, default=str)}\n\n"
             finally:
-                events.unsubscribe(queue)
+                events.unsubscribe(subscription)
 
         return StreamingResponse(stream(), media_type="text/event-stream")
 
