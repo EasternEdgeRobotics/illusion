@@ -1,6 +1,6 @@
 # Splitting illusion into claws / lipgloss / illusion
 
-Status: planned, not started. Target version 1.5.0.
+Status: phases 0, 1 and 2 done. Target version 1.5.0.
 
 Not 2.0.0: every slash command and kiosk command survives the split unchanged,
 so from a user's seat nothing happens. The upheaval is entirely in deployment,
@@ -341,7 +341,7 @@ above is what makes that safe to add later.
 Each phase ends with a working system. Do not start the next until the current
 one has run for a day.
 
-**Phase 0 -- config handling.** `config.yaml` is tracked with empty secret
+**Phase 0 -- config handling. DONE.** `config.yaml` is tracked with empty secret
 fields and kept out of commits with `git update-index --assume-unchanged`.
 History is clean -- no commit has ever contained a real token. That works today
 for one file, but the split turns one config into four, and assume-unchanged is
@@ -351,12 +351,20 @@ by hand on every clone. Switch to gitignored real files alongside committed
 `*.example.yaml` templates before creating the other three, and have each
 service fail at startup with a named-field error if a required value is empty.
 
-**Phase 1 -- restructure, no behaviour change.** Create the uv workspace and move
+**Phase 1 -- restructure, no behaviour change. DONE.** 99.2% of lines kept
+their original git blame; only genuinely rewritten lines moved to the
+restructure commits.
+
+Original text: Create the uv workspace and move
 files into the five packages. `illusion` still runs as one process, importing
 from the new packages. Nothing splits yet. Verify the kiosk, the bot, and a test
 print all still work.
 
-**Phase 2 -- lipgloss becomes a service.** Wrap the print queue in FastAPI, write
+**Phase 2 -- lipgloss becomes a service. DONE.** Also dropped discord from
+illusion-core entirely, which was listed as a Phase 2 side effect and turned out
+to be the thing that made the rest clean.
+
+Original text: Wrap the print queue in FastAPI, write
 `LipglossClient` in illusion-core, point the still-monolithic illusion at
 `http://127.0.0.1:8081`. Same machine, so a failure here is a bug in the client,
 not the network. Deploy under OpenRC on the laptop.
@@ -487,6 +495,17 @@ Each host gets its own file; the shared loader lives in illusion-core.
 
 No secret is duplicated across hosts except the two bearer tokens, and those are
 per-service rather than one global shared secret.
+
+## Deferred
+
+- **Terminal REPL hardening.** The command dispatch in `terminal_loop` is not
+  wrapped against unexpected exceptions, so a handler that raises something
+  other than `ServiceUnavailable` ends the loop. It is safe today because the
+  print handlers catch service errors and claws is still in-process, but Phase 3
+  moves every database command onto HTTP and must add this. Deliberately not
+  done yet: wrapping it means reindenting ~100 lines, and Phase 4 moves the
+  whole function into the kiosk package anyway, so doing it now would churn the
+  same code twice.
 
 ## Open items
 
