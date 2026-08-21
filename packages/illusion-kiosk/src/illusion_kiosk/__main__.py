@@ -517,6 +517,8 @@ async def run():
 
     global health_server, health_task
 
+    watched = []
+
     if HEALTH_PORT:
         health_server = fleet.make_health_server(
             fleet.make_health_app(SERVICE_NAME, illusion_version, boot_time,
@@ -525,10 +527,31 @@ async def run():
             HEALTH_PORT,
         )
         health_task = asyncio.create_task(health_server.serve())
+        watched.append(health_task)
 
     await fleet.announce(claws, SERVICE_NAME, illusion_version, boot_time, HOSTNAME)
 
-    await terminal_loop()
+    terminal_task = asyncio.create_task(terminal_loop())
+    watched.append(terminal_task)
+
+    # Watch both rather than only the terminal. uvicorn treats a failed bind as
+    # fatal, and the health endpoint binds a tailnet address that does not exist
+    # until tailscaled is up, which a cold boot can lose the race to. Left as a
+    # background task, that failure was silent: the kiosk carried on with no
+    # health endpoint, so it never exited, so nothing restarted it, and the
+    # fleet reported it unknown until someone noticed by hand.
+    done, pending = await asyncio.wait(watched, return_when=asyncio.FIRST_COMPLETED)
+
+    for task in pending:
+        task.cancel()
+
+    if terminal_task not in done:
+        # The health server stopped on its own, which only happens when
+        # something is wrong. Re-raise it so the process exits non-zero and the
+        # launcher restarts us, which is what actually retries the bind.
+        health_task.result()
+
+        raise RuntimeError("health endpoint stopped unexpectedly")
 
 
 def main():
