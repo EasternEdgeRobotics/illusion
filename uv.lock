@@ -224,7 +224,7 @@ wheels = [
 
 [[package]]
 name = "claws"
-version = "1.5.1"
+version = "1.5.2"
 source = { editable = "packages/claws" }
 dependencies = [
     { name = "fastapi" },
@@ -404,7 +404,7 @@ wheels = [
 
 [[package]]
 name = "illusion-bot"
-version = "1.5.1"
+version = "1.5.2"
 source = { editable = "packages/illusion-bot" }
 dependencies = [
     { name = "discord-py" },
@@ -423,7 +423,7 @@ requires-dist = [
 
 [[package]]
 name = "illusion-core"
-version = "1.5.1"
+version = "1.5.2"
 source = { editable = "packages/illusion-core" }
 dependencies = [
     { name = "httpx" },
@@ -438,7 +438,7 @@ requires-dist = [
 
 [[package]]
 name = "illusion-kiosk"
-version = "1.5.1"
+version = "1.5.2"
 source = { editable = "packages/illusion-kiosk" }
 dependencies = [
     { name = "fastapi" },
@@ -455,7 +455,7 @@ requires-dist = [
 
 [[package]]
 name = "lipgloss"
-version = "1.5.1"
+version = "1.5.2"
 source = { editable = "packages/lipgloss" }
 dependencies = [
     { name = "fastapi" },
