@@ -1,20 +1,20 @@
 import discord
 from discord import app_commands
 from discord.ext import commands
-from inventory_reader import SpreadsheetManager
+from claws.inventory_reader import SpreadsheetManager
 import asyncio
 import yaml
-import tomllib
-from pathlib import Path
-import illusion_helpers
+from importlib.metadata import version
+from illusion_core import helpers as illusion_helpers
 from PIL import Image
 import os, io, platform, signal
-from digikey_client import DigiKeyClient
+from claws.digikey_client import DigiKeyClient
 import time
 from datetime import timedelta
-from label_maker import LabelMaker
-import print_queue
-from print_queue import PrintQueue
+from lipgloss.label_maker import LabelMaker
+from lipgloss import print_queue
+from lipgloss.print_queue import PrintQueue
+from lipgloss.printer import PrinterUnavailable, media_remaining
 
 try:
     import readline
@@ -24,12 +24,7 @@ except:
 shutdown_event = asyncio.Event()
 shutdown_started = False
 
-pyproject_path = Path(__file__).resolve().parents[0] / "./pyproject.toml"
-
-with pyproject_path.open("rb") as f:
-    pyproject = tomllib.load(f)
-
-illusion_version = pyproject["project"]["version"]
+illusion_version = version("illusion")
 intents = discord.Intents.default()
 
 bot = commands.Bot(command_prefix="!", intents=intents, activity=discord.Game(name=f"illusion {illusion_version}"), status=discord.Status.online,)
@@ -403,10 +398,10 @@ class DB_Commands:
         # the queue itself will stop if we run out part way through anyway
         try:
             media_info = await printqueue.printer_media()
-        except illusion_helpers.PrinterUnavailable as e:
+        except PrinterUnavailable as e:
             return f"Unable to print, {e}"
 
-        remaining_media = illusion_helpers.media_remaining(media_info)
+        remaining_media = media_remaining(media_info)
 
         if total_prints > int(media_info["total_len"]):
             return f"This exceeds the max amount of prints possible on a single roll.\nPlease split this into smaller jobs. \n{total_prints} requested, {media_info["total_len"]} possible"
@@ -1437,4 +1432,10 @@ printqueue = PrintQueue(config["illusion"]["printer"]["niimbot"]["port"], "d110"
 if config["illusion"]["digikey"]["enabled"] == True:
     dk = DigiKeyClient("./config.yaml")
 
-bot.run(TOKEN)
+
+def main():
+    bot.run(TOKEN)
+
+
+if __name__ == "__main__":
+    main()

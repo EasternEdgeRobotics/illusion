@@ -4,8 +4,10 @@ from collections import deque
 
 import discord
 
-import illusion_helpers
-from illusion_helpers import LabelError, PrinterUnavailable
+from illusion_core import helpers as illusion_helpers
+
+from lipgloss import printer
+from lipgloss.printer import LabelError, PrinterUnavailable
 
 MAX_COPIES = 100
 
@@ -153,7 +155,7 @@ class PrintQueue:
 
         try:
             for page in dict.fromkeys(pages):
-                illusion_helpers.check_label(page, self._model)
+                printer.check_label(page, self._model)
         except LabelError as e:
             return None, f"Unable to print, {e}"
 
@@ -199,11 +201,11 @@ class PrintQueue:
     async def printer_media(self):
         """Media info for the loaded roll, raises PrinterUnavailable if it cant print."""
         async with self._printer_lock:
-            return await asyncio.to_thread(illusion_helpers.check_printer, self._port)
+            return await asyncio.to_thread(printer.check_printer, self._port)
 
     async def printer_info(self):
         async with self._printer_lock:
-            return await asyncio.to_thread(illusion_helpers.niimbot_printer_info, self._port)
+            return await asyncio.to_thread(printer.niimbot_printer_info, self._port)
 
     # Managing the queue
 
@@ -239,7 +241,7 @@ class PrintQueue:
             self._pause_reason = str(e)
             return f"Still unable to print, {e}\nThe print queue is staying paused."
 
-        remaining_media = illusion_helpers.media_remaining(media_info)
+        remaining_media = printer.media_remaining(media_info)
 
         self._paused = False
         self._pause_reason = None
@@ -346,7 +348,7 @@ class PrintQueue:
 
             try:
                 async with self._printer_lock:
-                    await asyncio.to_thread(illusion_helpers.niimbot_print, page, self._port, self._model)
+                    await asyncio.to_thread(printer.niimbot_print, page, self._port, self._model)
             except PrinterUnavailable as e:
                 self._pause(str(e))
 

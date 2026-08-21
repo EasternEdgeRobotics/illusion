@@ -2,6 +2,22 @@ version = 1
 revision = 3
 requires-python = ">=3.14"
 
+[manifest]
+members = [
+    "claws",
+    "illusion",
+    "illusion-core",
+    "lipgloss",
+]
+
+[manifest.dependency-groups]
+dev = [
+    { name = "claws", editable = "packages/claws" },
+    { name = "illusion", editable = "packages/illusion" },
+    { name = "illusion-core", editable = "packages/illusion-core" },
+    { name = "lipgloss", editable = "packages/lipgloss" },
+]
+
 [[package]]
 name = "aiohappyeyeballs"
 version = "2.7.1"
@@ -175,6 +191,23 @@ wheels = [
 ]
 
 [[package]]
+name = "claws"
+version = "1.5.0"
+source = { editable = "packages/claws" }
+dependencies = [
+    { name = "illusion-core" },
+    { name = "pyyaml" },
+    { name = "requests" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "illusion-core", editable = "packages/illusion-core" },
+    { name = "pyyaml", specifier = ">=6.0.3" },
+    { name = "requests", specifier = ">=2.34.2" },
+]
+
+[[package]]
 name = "click"
 version = "8.4.2"
 source = { registry = "https://pypi.org/simple" }
@@ -260,29 +293,57 @@ wheels = [
 
 [[package]]
 name = "illusion"
-version = "1.4.0"
-source = { virtual = "." }
+version = "1.5.0"
+source = { editable = "packages/illusion" }
 dependencies = [
+    { name = "claws" },
     { name = "click" },
     { name = "discord-py" },
-    { name = "niimprint" },
-    { name = "pyserial" },
-    { name = "python-barcode" },
+    { name = "illusion-core" },
+    { name = "lipgloss" },
     { name = "pyyaml" },
-    { name = "qrcode", extra = ["pil"] },
-    { name = "requests" },
 ]
 
 [package.metadata]
 requires-dist = [
+    { name = "claws", editable = "packages/claws" },
     { name = "click", specifier = ">=8.4.2" },
     { name = "discord-py", specifier = ">=2.7.1" },
+    { name = "illusion-core", editable = "packages/illusion-core" },
+    { name = "lipgloss", editable = "packages/lipgloss" },
+    { name = "pyyaml", specifier = ">=6.0.3" },
+]
+
+[[package]]
+name = "illusion-core"
+version = "1.5.0"
+source = { editable = "packages/illusion-core" }
+dependencies = [
+    { name = "discord-py" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "discord-py", specifier = ">=2.7.1" }]
+
+[[package]]
+name = "lipgloss"
+version = "1.5.0"
+source = { editable = "packages/lipgloss" }
+dependencies = [
+    { name = "illusion-core" },
+    { name = "niimprint" },
+    { name = "pyserial" },
+    { name = "python-barcode" },
+    { name = "qrcode", extra = ["pil"] },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "illusion-core", editable = "packages/illusion-core" },
     { name = "niimprint", git = "https://github.com/Peyton-C/niimprint" },
     { name = "pyserial", specifier = ">=3.5" },
     { name = "python-barcode", specifier = ">=0.16.1" },
-    { name = "pyyaml", specifier = ">=6.0.3" },
     { name = "qrcode", extras = ["pil"], specifier = ">=8.2" },
-    { name = "requests", specifier = ">=2.34.2" },
 ]
 
 [[package]]
