@@ -11,6 +11,7 @@ working the moment the database lives on a different machine from the bot.
 import asyncio
 import json
 import time
+from importlib.metadata import version
 
 import httpx
 
@@ -29,7 +30,10 @@ from illusion_core.uptime import service_uptime_ms, system_uptime_ms
 from claws.digikey_client import DigiKeyClient
 from claws.inventory_reader import SpreadsheetManager
 
-VERSION = "1.5.0"
+# From package metadata, never hardcoded: the fleet status flags a version
+# mismatch across services, and a constant left behind by a release bump would
+# report a mismatch that does not exist.
+VERSION = version("claws")
 
 
 class NewItem(BaseModel):
