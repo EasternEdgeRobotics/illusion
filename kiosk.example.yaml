@@ -5,7 +5,10 @@ kiosk:
     url: http://claws-vm:8080    # tailnet address of the inventory service
     token:                       # must match claws.yaml's token
   health:
-    host: 0.0.0.0      # tailnet address in production, so claws can reach it
+    # The tailnet address (100.x.y.z), never 0.0.0.0. This laptop sits on a
+    # network that is not ours with working client-to-client LAN, so binding
+    # every interface exposes this to whoever else is on it.
+    host: 100.x.y.z
     port: 8082
   printer:
     enabled: true                # gates the print commands

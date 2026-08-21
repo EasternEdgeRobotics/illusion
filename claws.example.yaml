@@ -2,7 +2,9 @@
 # Runs on the NAS VM and owns the database.
 claws:
   bind:
-    host: 127.0.0.1      # tailnet address in production
+    # The kiosk reaches this across the tailnet. Bind the VM's own tailnet
+    # address (100.x.y.z), not 0.0.0.0.
+    host: 127.0.0.1
     port: 8080
   token:                 # shared bearer token, must match the frontend's config
   database_location: /var/lib/claws/inventory.db

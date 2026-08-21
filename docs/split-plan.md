@@ -403,6 +403,32 @@ process. Stop illusion, then:
 
 ## Deployment specifics
 
+### The closet network is hostile
+
+The laptop sits on a building network that is not ours, with working
+client-to-client LAN. Anything it binds on a non-loopback interface is reachable
+by whoever else is on that network, and the bearer tokens are the only thing
+between them and the print server.
+
+- **Bind the tailnet address, never `0.0.0.0`.** lipgloss and the kiosk health
+  endpoint have to be reachable from the VM, so they cannot be loopback, but
+  `100.x.y.z` is reachable only over the tailnet while `0.0.0.0` is reachable
+  from the whole building. Same for claws on the VM.
+- **Services must start after tailscaled**, or the bind fails at boot because
+  the interface does not exist yet. OpenRC: `depend() { need tailscaled }`. If
+  that proves fragile, bind `0.0.0.0` and restrict the ports to the `tailscale0`
+  interface with a firewall instead -- more robust, since it does not depend on
+  start order or on a hardcoded address.
+- **Tailscale SSH does not protect you here.** It claims port 22 on the tailnet
+  IP only and leaves `sshd_config` untouched, so the system sshd keeps listening
+  on the LAN with whatever config it has. Enabling Tailscale SSH and assuming
+  you are covered is the trap.
+- On the laptop, the simplest answer is to disable system sshd entirely
+  (`rc-update del sshd`) and use Tailscale SSH, since physical access is the
+  fallback and we have it. If sshd stays, `PasswordAuthentication no` is not
+  enough on its own -- set `KbdInteractiveAuthentication no` as well, or PAM can
+  still allow passwords through keyboard-interactive.
+
 ### SSH between the hosts (Alpine quirks)
 
 Both hosts are Alpine, which splits OpenSSH into pieces and defaults differently
