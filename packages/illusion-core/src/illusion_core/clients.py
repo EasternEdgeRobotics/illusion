@@ -188,7 +188,9 @@ class ClawsClient(BaseClient):
         return await self.get("/items")
 
     async def add_item(self, item):
-        return (await self.post("/items", json={"item": item}))["sku"]
+        """The whole response, since claws may reject the item rather than
+        create one, and the caller needs to see which happened."""
+        return await self.post("/items", json={"item": item})
 
     async def update_item(self, sku, updates):
         return await self.or_none("PATCH", f"/items/{sku}", json={"updates": updates})

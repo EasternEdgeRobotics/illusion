@@ -77,6 +77,102 @@ class Registration(BaseModel):
     host: str | None = None
 
 
+# Fields that count discrete things, so they cannot be fractional on an item
+# tracked per item. LOW_THRESHOLD and ORDER_QUANTITY are deliberately not here:
+# a threshold of 2.5 is only an odd way of writing 3 and does no harm, and
+# ORDER_QUANTITY describes a purchase rather than stock on hand.
+WHOLE_NUMBER_FIELDS = ("QUANTITY_ON_HAND", "DECREASE_AMOUNT")
+
+FRACTION_HINT = "HYBRID tracking is the one that takes fractions."
+
+
+def _is_fractional(value):
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        # Not a number at all, which the database layer rejects with a better
+        # message than anything this could produce
+        return False
+
+    return number != int(number)
+
+
+def amount_problem(item, amount):
+    """Whether this amount makes sense for how the item is tracked.
+
+    KANBAN items have no quantity at all -- a decrease just marks them low and
+    the amount is discarded -- so there is nothing to refuse. QUANTITY items are
+    counted in whole units, so a fraction is a mistake worth catching rather
+    than silently rounding away. HYBRID items are measured rather than counted,
+    so fractions are the entire point of the mode.
+
+    Returns the reason as a string, or None if the amount is fine.
+    """
+    if amount is None or item["TRACKING_MODE"] != "QUANTITY":
+        return None
+
+    if _is_fractional(amount):
+        return (
+            f"{item['SKU']} is tracked per item, so the amount has to be a whole "
+            f"number. {FRACTION_HINT}"
+        )
+
+    return None
+
+
+def no_count_problem(item, action):
+    """KANBAN items have no quantity at all, so counting operations are meaningless.
+
+    They are only low or not low: a decrease marks them low and that is the
+    whole model. Anything that sets or adds to a count would give them a
+    phantom quantity and, worse, let a LOW_THRESHOLD they should not have start
+    deciding their low state.
+    """
+    if item["TRACKING_MODE"] != "KANBAN":
+        return None
+
+    return (
+        f"{item['SKU']} is KANBAN tracked, so it has no stock count to {action}. "
+        f"Mark it low with `decrease`, or clear that with `resolve`."
+    )
+
+
+def fields_problem(tracking_mode, values, sku=None):
+    """The same rules, for values being written rather than an amount applied.
+
+    Without this the checks are trivially bypassed: a fractional
+    DECREASE_AMOUNT stored on the item is what a bare `decrease` uses, and
+    writing QUANTITY_ON_HAND directly sidesteps set_stock entirely.
+    """
+    subject = sku or "This item"
+    present = [field for field in WHOLE_NUMBER_FIELDS if values.get(field) is not None]
+
+    if tracking_mode == "KANBAN":
+        if not present:
+            return None
+
+        return (
+            f"{subject} is KANBAN tracked, so it has no stock count. "
+            f"Leave {' and '.join(present)} unset, or track it as QUANTITY or HYBRID."
+        )
+
+    if tracking_mode != "QUANTITY":
+        return None
+
+    bad = [
+        f"{field} ({values[field]})"
+        for field in present
+        if _is_fractional(values[field])
+    ]
+
+    if not bad:
+        return None
+
+    requirement = "must be a whole number" if len(bad) == 1 else "must be whole numbers"
+
+    return f"{subject} is tracked per item, so {' and '.join(bad)} {requirement}. {FRACTION_HINT}"
+
+
 def create_app(config_path="./claws.yaml"):
     config = illusion_config.load(
         config_path,
@@ -261,6 +357,13 @@ def create_app(config_path="./claws.yaml"):
 
     @app.post("/items", dependencies=auth)
     async def add_item(request: NewItem):
+        problem = fields_problem(
+            request.item.get("TRACKING_MODE") or "KANBAN", request.item
+        )
+
+        if problem:
+            return {"rejected": problem}
+
         sku = inventory.add_item(request.item)
         inventory.save()
 
@@ -268,7 +371,20 @@ def create_app(config_path="./claws.yaml"):
 
     @app.patch("/items/{sku}", dependencies=auth)
     async def update_item(sku: str, request: Updates):
-        was_low = bool(_item_or_404(sku)["LOW"])
+        old = _item_or_404(sku)
+
+        # The mode may be changing in this same request, so check against what
+        # the item is about to become rather than what it is now
+        problem = fields_problem(
+            request.updates.get("TRACKING_MODE") or old["TRACKING_MODE"],
+            request.updates,
+            sku,
+        )
+
+        if problem:
+            return {"rejected": problem}
+
+        was_low = bool(old["LOW"])
 
         inventory.update_item(sku, request.updates)
         inventory.save()
@@ -287,7 +403,10 @@ def create_app(config_path="./claws.yaml"):
 
     @app.post("/items/{sku}/decrease", dependencies=auth)
     async def decrease(sku: str, request: Amount):
-        _item_or_404(sku)
+        problem = amount_problem(_item_or_404(sku), request.amount)
+
+        if problem:
+            return {"rejected": problem}
 
         result = inventory.decrease_item(sku, request.amount)
         inventory.save()
@@ -300,7 +419,13 @@ def create_app(config_path="./claws.yaml"):
 
     @app.post("/items/{sku}/increase", dependencies=auth)
     async def increase(sku: str, request: Amount):
-        was_low = bool(_item_or_404(sku)["LOW"])
+        old = _item_or_404(sku)
+        problem = no_count_problem(old, "increase") or amount_problem(old, request.amount)
+
+        if problem:
+            return {"rejected": problem}
+
+        was_low = bool(old["LOW"])
 
         item = inventory.increase_item(sku, float(request.amount or 1))
         inventory.save()
@@ -309,7 +434,15 @@ def create_app(config_path="./claws.yaml"):
 
     @app.put("/items/{sku}/stock", dependencies=auth)
     async def set_stock(sku: str, request: Quantity):
-        was_low = bool(_item_or_404(sku)["LOW"])
+        old = _item_or_404(sku)
+        problem = no_count_problem(old, "set") or fields_problem(
+            old["TRACKING_MODE"], {"QUANTITY_ON_HAND": request.quantity}, sku
+        )
+
+        if problem:
+            return {"rejected": problem}
+
+        was_low = bool(old["LOW"])
 
         item = inventory.set_stock(sku, request.quantity)
         inventory.save()
