@@ -434,12 +434,14 @@ between them and the print server.
 Both hosts are Alpine, which splits OpenSSH into pieces and defaults differently
 from most distros:
 
-- **`scp` does not work out of the box.** OpenSSH 9.0+ runs scp over the SFTP
-  protocol, and Alpine ships `openssh-sftp-server` as a separate package that a
-  minimal install will not have. `sshd_config` references the subsystem and it
-  simply fails. `apk add openssh-sftp-server` on both, or use `scp -O` for the
-  legacy protocol. This matters for the one-off database copy in "Moving the
-  database".
+- **`scp` needs `openssh-sftp-server` on the receiving host.** OpenSSH 9.0+ runs
+  scp over the SFTP protocol, and Alpine packages the server side separately.
+  The `openssh` meta-package depends on it, so anything installed with
+  `setup-alpine` or `apk add openssh` already has it -- scp to the kiosk laptop
+  works today. Only an install that took `openssh-server` on its own would be
+  missing it. Check with `apk info -e openssh-sftp-server` before relying on the
+  database copy in "Moving the database"; `scp -O` forces the legacy protocol if
+  it ever bites.
 - **`rsync` is not installed either**, and the nightly backup needs it on both
   ends. It is unaffected by the sftp issue -- rsync speaks its own protocol over
   ssh.
@@ -454,14 +456,25 @@ from most distros:
   `rc-update add sshd default`.
 - **Default shell is busybox `ash`.** Keep scripts POSIX; no `#!/bin/bash`.
 
-Alternatively, skip key distribution entirely: Tailscale is already on both
-hosts, and `tailscale up --ssh` plus an `ssh` rule in the tailnet ACL
-authenticates on tailnet identity with no keys to move around. It only works
-over the tailnet, so keep a key or console path as the fallback.
+Decision: ordinary keys and system sshd, not Tailscale SSH. The macOS App Store
+build of Tailscale ships no CLI on PATH, so every tailnet command would mean
+digging out the binary inside the app bundle, and Tailscale SSH would not have
+removed the need to harden sshd anyway.
 
-If sshd is locked to key-only, confirm key login works first. The escape hatches
-differ: the VM has a TrueNAS console, the closet laptop needs someone physically
-in the closet.
+Three key relationships, not one:
+
+| From | To | For |
+|------|----|-----|
+| laptop (dev) | VM, kiosk | ordinary admin |
+| VM | kiosk | the nightly backup rsync in "Backups" |
+
+The VM to kiosk key is easy to forget until the backup silently fails. Consider
+restricting it in the kiosk's `authorized_keys` with `restrict,command=...` so a
+key sitting on the VM cannot do anything else with it.
+
+If sshd is locked to key-only, confirm key login works first, in a second
+terminal, before closing the first. The escape hatches differ: the VM has a
+TrueNAS console, the closet laptop needs someone physically in the closet.
 
 
 ### Closet laptop (Alpine, sway autologin)
