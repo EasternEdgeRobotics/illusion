@@ -7,7 +7,10 @@ claws:
     host: 127.0.0.1
     port: 8080
   token:                 # shared bearer token, must match the frontend's config
-  database_location: /var/lib/claws/inventory.db
+  # Keep this OUTSIDE the git checkout. The database is gitignored, and
+  # `git clean -xdf` exists to delete ignored files, so a cleanup during a bad
+  # deploy would take the inventory with it.
+  database_location: /home/illusion/inventory.db
   # The fleet `about` reports on. A fixed set, so this is static config rather
   # than service discovery -- and it is what lets `about` survive a claws
   # restart, which would otherwise forget everything that had announced itself.
@@ -15,6 +18,10 @@ claws:
     illusion-bot: http://127.0.0.1:8090
     lipgloss: http://eer-inventory:8081
     illusion-kiosk: http://eer-inventory:8082
+  # Note: when digikey is enabled, claws rewrites THIS FILE to store refreshed
+  # tokens, so it must be writable by the service user, as must its directory
+  # (the write is a temp file plus a rename). A root-owned config would fail on
+  # the first refresh, roughly half an hour in, not at startup.
   digikey:
     enabled: false
     client_id:
