@@ -147,7 +147,7 @@ def create_app(config_path="./claws.yaml"):
             "version": VERSION,
             "uptime_ms": service_uptime_ms(started_at),
             "system_uptime_ms": system_uptime_ms(),
-            "items": len(inventory.read_all()),
+            "items": inventory.count_items(),
         }
 
     async def _probe(name, url):

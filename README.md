@@ -29,8 +29,7 @@ it.
 All four on one machine, from a single checkout:
 ```
 uv sync
-uv run claws & uv run lipgloss & uv run illusion-bot &
-uv run illusion-kiosk
+uv run claws & uv run lipgloss & uv run illusion-bot & uv run illusion-kiosk
 ```
 
 ## Label Printing

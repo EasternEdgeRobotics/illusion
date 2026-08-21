@@ -425,6 +425,15 @@ class SpreadsheetManager:
 
             return [self._row_to_dict(row) for row in rows]
 
+    def count_items(self) -> int:
+        """How many items exist, without reading them.
+
+        For /health, which is unauthenticated: counting by reading every row and
+        taking its length is unbounded work for anyone who can reach the port.
+        """
+        with self.lock:
+            return self.connection.execute("SELECT COUNT(*) FROM items").fetchone()[0]
+
     def validate_sku(self, sku: str) -> bool:
         return self._find_row_by_sku(sku) is not None
 

@@ -2,9 +2,13 @@
 # Runs on the NAS VM and owns the database.
 claws:
   bind:
-    # The kiosk reaches this across the tailnet. Bind the VM's own tailnet
-    # address (100.x.y.z), not 0.0.0.0.
-    host: 127.0.0.1
+    # The kiosk reaches this across the tailnet while the bot talks to it over
+    # loopback on this same VM, so it has to answer on both. "::" is every
+    # interface on both address families; 0.0.0.0 is IPv4 only, which breaks
+    # MagicDNS names since tailnet hosts resolve to an IPv6 address too.
+    # On the closet laptop, bind the tailnet address specifically instead --
+    # that network is not ours.
+    host: "::"
     port: 8080
   token:                 # shared bearer token, must match the frontend's config
   # Keep this OUTSIDE the git checkout. The database is gitignored, and
