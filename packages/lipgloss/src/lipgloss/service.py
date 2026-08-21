@@ -9,6 +9,7 @@ dependency the printer in front of it.
 import asyncio
 import json
 import time
+from importlib.metadata import version
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, Header, HTTPException, UploadFile, Form
@@ -23,7 +24,10 @@ from lipgloss.label_maker import LabelMaker, LABEL_STYLES
 from lipgloss.print_queue import MAX_COPIES, PrintQueue
 from lipgloss.printer import PrinterUnavailable
 
-VERSION = "1.5.0"
+# From package metadata, never hardcoded: the fleet status flags a version
+# mismatch across services, and a constant left behind by a release bump would
+# report a mismatch that does not exist.
+VERSION = version("lipgloss")
 
 LABEL_WIDTH = 320
 LABEL_HEIGHT = 96

@@ -15,6 +15,11 @@ import socket
 import time
 from importlib.metadata import version
 
+try:
+    import readline
+except ImportError:
+    print("readline not installed, the prompt will have no history or line editing")
+
 from illusion_core import config as illusion_config
 from illusion_core import helpers as illusion_helpers
 from illusion_core.clients import ClawsClient, LipglossClient, ServiceUnavailable
@@ -364,6 +369,13 @@ async def lipgloss_event_loop():
 
     Reconnects on its own, because lipgloss restarting must not silently end
     print notifications for the rest of the session.
+
+    Reconnect failures are deliberately not reported here. This loop retries
+    every five seconds, and terminal_print reissues the prompt after anything it
+    writes, so a chatty version makes the terminal unusable for as long as
+    lipgloss is down. Nothing is hidden by staying quiet: every print command
+    reports an unreachable lipgloss at the moment it is used, which is when it
+    actually matters to whoever is standing there.
     """
     while not shutdown_event.is_set():
         try:
@@ -379,15 +391,13 @@ async def lipgloss_event_loop():
                 try:
                     await handler(event)
                 except Exception as e:
-                    print(f"Unable to deliver print update: {e}")
+                    terminal_print(f"Unable to deliver print update: {e}")
 
                 if event["event"] == "job.done":
                     notifiers.pop(event["reply_to"], None)
-        except Exception as e:
+        except Exception:
             if shutdown_event.is_set():
                 return
-
-            print(f"lipgloss event stream dropped ({e}), reconnecting")
 
         await asyncio.sleep(5)
 

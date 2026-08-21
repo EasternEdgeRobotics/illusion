@@ -1,6 +1,6 @@
 [project]
 name = "lipgloss"
-version = "1.5.0"
+version = "1.5.1"
 description = "Label rendering and print queue service for illusion"
 requires-python = ">=3.14"
 dependencies = [
