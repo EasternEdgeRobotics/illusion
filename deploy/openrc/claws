@@ -1,0 +1,28 @@
+#!/sbin/openrc-run
+# The inventory service. Owns the database, so nothing else writes to it.
+# Install to /etc/init.d/claws
+
+name="claws"
+description="illusion inventory service"
+
+command="/home/illusion/illusion/.venv/bin/claws"
+command_user="illusion:illusion"
+# claws reads ./claws.yaml, so the working directory is what points it at
+# /home/illusion/claws.yaml rather than one inside the checkout
+directory="/home/illusion"
+
+supervisor="supervise-daemon"
+respawn_delay=5
+
+output_log="/home/illusion/logs/claws.log"
+error_log="/home/illusion/logs/claws.log"
+
+# Python block-buffers stdout when it is a file rather than a terminal, so
+# without this the log stays empty and the service looks hung when it is fine
+export PYTHONUNBUFFERED=1
+
+depend() {
+	need net
+	# Binds a tailnet address, which does not exist until tailscaled is up
+	after tailscaled
+}

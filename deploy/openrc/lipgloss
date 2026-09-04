@@ -1,0 +1,33 @@
+#!/sbin/openrc-run
+# The print service. Runs on whichever machine the Niimbot is plugged into.
+# Install to /etc/init.d/lipgloss
+
+name="lipgloss"
+description="illusion label print service"
+
+command="/home/illusion/illusion/.venv/bin/lipgloss"
+# dialout as the group, not the user's own: /dev/niimbot is crw-rw---- root
+# dialout, and relying on supplementary groups reaching a supervised process is
+# less certain than just running with dialout as the group
+command_user="illusion:dialout"
+# Reads ./lipgloss.yaml relative to here
+directory="/home/illusion"
+
+supervisor="supervise-daemon"
+respawn_delay=5
+
+output_log="/home/illusion/logs/lipgloss.log"
+error_log="/home/illusion/logs/lipgloss.log"
+
+# Python block-buffers stdout when it is a file rather than a terminal, so
+# without this the log stays empty and the service looks hung when it is fine
+export PYTHONUNBUFFERED=1
+
+depend() {
+	need net
+	# Binds a tailnet address so the bot can reach it, and that interface does
+	# not exist until tailscaled is up. Deliberately no dependency on the
+	# graphical session: printing from Discord has to work whether or not
+	# anyone is logged into sway.
+	after tailscaled
+}

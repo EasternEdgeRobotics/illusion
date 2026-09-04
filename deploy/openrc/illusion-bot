@@ -1,0 +1,30 @@
+#!/sbin/openrc-run
+# The Discord bot. Talks to claws over loopback on this same VM, and to
+# lipgloss across the tailnet.
+# Install to /etc/init.d/illusion-bot
+
+name="illusion-bot"
+description="illusion Discord bot"
+
+command="/home/illusion/illusion/.venv/bin/illusion-bot"
+command_user="illusion:illusion"
+# Reads ./bot.yaml relative to here
+directory="/home/illusion"
+
+supervisor="supervise-daemon"
+respawn_delay=5
+
+output_log="/home/illusion/logs/illusion-bot.log"
+error_log="/home/illusion/logs/illusion-bot.log"
+
+# Python block-buffers stdout when it is a file rather than a terminal, so
+# without this the log stays empty and the service looks hung when it is fine
+export PYTHONUNBUFFERED=1
+
+depend() {
+	need net
+	# after, not need: the bot tolerates claws being down, since its event loop
+	# retries and reconciles on reconnect. claws failing must not stop the bot
+	# from starting, because the bot is the higher priority service.
+	after claws tailscaled
+}
