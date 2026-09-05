@@ -69,6 +69,31 @@ def render(result):
     return result
 
 
+async def send_result(interaction, result, view=None):
+    """Reply with whatever the handler produced, embed or plain text.
+
+    Every handler can hand back a string instead of Rows: no search results, an
+    invalid sku, or a service it could not reach. Sending that as embed= is what
+    breaks, so the choice is made here once rather than at each call site.
+    """
+    result = render(result)
+
+    if isinstance(result, discord.Embed):
+        kwargs = {"embed": result}
+    else:
+        kwargs = {"content": result}
+
+    if view is not None:
+        kwargs["view"] = view
+
+    # Deferring already used up the initial response, so which of the two to
+    # call depends on whether the command deferred
+    if interaction.response.is_done():
+        await interaction.followup.send(**kwargs)
+    else:
+        await interaction.response.send_message(**kwargs)
+
+
 async def create_low_thread(sku, item=None):
     """Open a forum thread for an item that just went low.
 
@@ -255,12 +280,11 @@ async def info(interaction: discord.Interaction, sku: str, hide_ext: bool = True
         await interaction.followup.send("Invalid sku")
         return
 
-    response_message = render(await command_handler.handler_info(sku, hide_ext))
-    view = presentation.make_vendor_buttons(item)
-    if view != None:
-        await interaction.followup.send(embed=response_message, view=view,)
-    else:
-        await interaction.followup.send(embed=response_message,)
+    await send_result(
+        interaction,
+        await command_handler.handler_info(sku, hide_ext),
+        view=presentation.make_vendor_buttons(item),
+    )
 
 @bot.tree.command(name="delete", description="Delete an item")
 @app_commands.describe(sku="Item Sku")
@@ -395,35 +419,22 @@ async def add_with_dkpn(interaction: discord.Interaction, digikey_part_number: s
 @app_commands.describe(name="Item name")
 async def search(interaction: discord.Interaction, name: str):
     await interaction.response.defer()
-    response_message = render(await command_handler.handler_search(name))
 
-    await interaction.followup.send(embed=response_message)
+    await send_result(interaction, await command_handler.handler_search(name))
 
 @bot.tree.command(name="search_tag", description="Search inventory by tag")
 @app_commands.describe(tag="Tag to search for")
 async def search_tag(interaction: discord.Interaction, tag: str):
     await interaction.response.defer()
 
-    response_message = render(await command_handler.handler_search_tag(
-        tag,
-    ))
-
-    if isinstance(response_message, discord.Embed):
-        await interaction.followup.send(embed=response_message)
-    else:
-        await interaction.followup.send(response_message)
+    await send_result(interaction, await command_handler.handler_search_tag(tag))
 
 
 @bot.tree.command(name="get_tags", description="List all item tags")
 async def get_tags(interaction: discord.Interaction):
     await interaction.response.defer()
 
-    response_message = render(await command_handler.handler_get_tags())
-
-    if isinstance(response_message, discord.Embed):
-        await interaction.followup.send(embed=response_message)
-    else:
-        await interaction.followup.send(response_message)
+    await send_result(interaction, await command_handler.handler_get_tags())
 
 @bot.tree.command(name="add_tag", description="Add a tag to an item")
 @app_commands.describe(sku="Item SKU", tag="Tag to add")
@@ -722,12 +733,10 @@ async def print_queue_status(interaction: discord.Interaction):
         await interaction.response.send_message(f"Printer not enabled")
         return
 
-    response_message = presentation.queue_embed(await command_handler.handler_print_queue())
-
-    if isinstance(response_message, discord.Embed):
-        await interaction.response.send_message(embed=response_message)
-    else:
-        await interaction.response.send_message(response_message)
+    await send_result(
+        interaction,
+        presentation.queue_embed(await command_handler.handler_print_queue()),
+    )
 
 @bot.tree.command(name="print_resume", description="Resume the print queue after fixing the printer")
 async def print_resume(interaction: discord.Interaction):
