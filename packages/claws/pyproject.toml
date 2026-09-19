@@ -1,6 +1,6 @@
 [project]
 name = "claws"
-version = "1.5.3"
+version = "1.6.0"
 description = "Inventory service for illusion"
 requires-python = ">=3.14"
 dependencies = [
