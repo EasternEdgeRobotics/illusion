@@ -224,6 +224,9 @@ class ClawsClient(BaseClient):
     async def search(self, name, limit=10):
         return await self.get("/search", params={"name": name, "limit": limit})
 
+    async def suggest(self, query, limit=25):
+        return await self.get("/suggest", params={"query": query, "limit": limit})
+
     async def tags(self):
         return await self.get("/tags")
 

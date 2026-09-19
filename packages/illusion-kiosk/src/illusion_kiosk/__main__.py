@@ -271,7 +271,9 @@ async def terminal_loop():
             elif command == "info" and len(parts) >= 2:
                 response_message = render(await command_handler.handler_info(parts[1]))
             elif command == "search" and len(parts) >= 2:
-                response_message = render(await command_handler.handler_search(parts[1]))
+                # join back parts and remove whitespace
+                query = " ".join(" ".join(parts[1:]).split())
+                response_message = render(await command_handler.handler_search(query))
             elif command == "decrease" and len(parts) >= 2:
                 if len(parts) == 3:
                     response_message = await command_handler.handler_decrease(parts[1], parts[2])
