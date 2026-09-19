@@ -352,7 +352,6 @@ async def delete(interaction: discord.Interaction, sku: str):
 
 @bot.tree.command(name="add_item", description="Add item to inventory w/ per unit tracking")
 @app_commands.describe(item_name="Item Name",
-                       priority="Item Priority, 1-10",
                        order_quantity="Number of units to order when stock low", unit="Unit name",
                        quantity="Number of units on hand", low_threshold="Minimum Stock", digikey_part_number="Digikey Part Number",
                        vendor_1="Source 1 for Item", link_1="Source 1 Purchase Link",
@@ -363,8 +362,8 @@ async def delete(interaction: discord.Interaction, sku: str):
                        tags="Comma-separated tags", notes="Notes about this item",
                        )
 
-async def add_item(interaction: discord.Interaction, item_name: str, priority: int, 
-                   quantity: float, order_quantity: float, low_threshold: float, unit: str, 
+async def add_item(interaction: discord.Interaction, item_name: str,
+                   quantity: float, order_quantity: float, low_threshold: float, unit: str,
                    digikey_part_number: str | None = None, tags: str | None = None, notes: str | None = None,
                    vendor_1: str | None = None, link_1: str | None = None, vendor_2: str | None = None, link_2: str | None = None, 
                    vendor_3: str | None = None, link_3: str | None = None, vendor_4: str | None = None, 
@@ -375,14 +374,13 @@ async def add_item(interaction: discord.Interaction, item_name: str, priority: i
     else:
         tags = f"per_item_tracking, {tags}"
 
-    response_message = await command_handler.handler_add_item(item_name, priority, order_quantity, "QUANTITY", quantity, low_threshold, unit, "1", vendor_1, link_1, 
+    response_message = await command_handler.handler_add_item(item_name, order_quantity, "QUANTITY", quantity, low_threshold, unit, "1", vendor_1, link_1,
                                                               vendor_2, link_2, vendor_3, link_3, vendor_4, link_4, vendor_5, link_5, digikey_part_number, tags, notes,)
 
     await interaction.response.send_message(response_message)
 
 @bot.tree.command(name="add_kanban", description="Add item to inventory w/ kanban tracking")
 @app_commands.describe(item_name="Item Name",
-                       priority="Item Priority, 1-10",
                        order_quantity="Number of units to order when stock low", digikey_part_number="Digikey Part Number",
                        vendor_1="Source 1 for Item", link_1="Source 1 Purchase Link",
                        vendor_2="Source 2 for Item", link_2="Source 2 Purchase Link",
@@ -392,7 +390,7 @@ async def add_item(interaction: discord.Interaction, item_name: str, priority: i
                        tags="Comma-separated tags", notes="Notes about this item",
                        )
 
-async def add_kanban(interaction: discord.Interaction, item_name: str, priority: int, order_quantity: float, 
+async def add_kanban(interaction: discord.Interaction, item_name: str, order_quantity: float,
                      digikey_part_number: str | None = None, tags: str | None = None, notes: str | None = None,
                    vendor_1: str | None = None, link_1: str | None = None, vendor_2: str | None = None, link_2: str | None = None, 
                    vendor_3: str | None = None, link_3: str | None = None, vendor_4: str | None = None, 
@@ -403,14 +401,13 @@ async def add_kanban(interaction: discord.Interaction, item_name: str, priority:
     else:
         tags = f"kanban_tracking, {tags}"
 
-    response_message = await command_handler.handler_add_item(item_name, priority, order_quantity, "KANBAN", None, None, None, None, vendor_1, link_1, 
+    response_message = await command_handler.handler_add_item(item_name, order_quantity, "KANBAN", None, None, None, None, vendor_1, link_1,
                                                               vendor_2, link_2, vendor_3, link_3, vendor_4, link_4, vendor_5, link_5, digikey_part_number, tags, notes,)
 
     await interaction.response.send_message(response_message)
 
 @bot.tree.command(name="add_hybrid", description="Add item to inventory w/ hybrid tracking")
 @app_commands.describe(item_name="Item Name",
-                       priority="Item Priority, 1-10",
                        order_quantity="Number of units to order when stock low", unit="Unit name", digikey_part_number="Digikey Part Number",
                        quantity="Number of units on hand", low_threshold="Minimum Stock", decrease_amount="Amount to decrease by",
                        vendor_1="Source 1 for Item", link_1="Source 1 Purchase Link",
@@ -421,8 +418,8 @@ async def add_kanban(interaction: discord.Interaction, item_name: str, priority:
                        tags="Comma-separated tags", notes="Notes about this item",
                        )
 
-async def add_hybrid(interaction: discord.Interaction, item_name: str, priority: int, 
-                   quantity: float, order_quantity: float, low_threshold: float, unit: str, decrease_amount: float, 
+async def add_hybrid(interaction: discord.Interaction, item_name: str,
+                   quantity: float, order_quantity: float, low_threshold: float, unit: str, decrease_amount: float,
                    digikey_part_number: str | None = None, tags: str | None = None, notes: str | None = None,
                    vendor_1: str | None = None, link_1: str | None = None, vendor_2: str | None = None, link_2: str | None = None, 
                    vendor_3: str | None = None, link_3: str | None = None, vendor_4: str | None = None, 
@@ -433,21 +430,21 @@ async def add_hybrid(interaction: discord.Interaction, item_name: str, priority:
     else:
         tags = f"hybrid_tracking, {tags}"
 
-    response_message = await command_handler.handler_add_item(item_name, priority, order_quantity, "HYBRID", 
-                                                              quantity, low_threshold, unit, decrease_amount, vendor_1, link_1, 
+    response_message = await command_handler.handler_add_item(item_name, order_quantity, "HYBRID",
+                                                              quantity, low_threshold, unit, decrease_amount, vendor_1, link_1,
                                                               vendor_2, link_2, vendor_3, link_3, vendor_4, link_4, vendor_5, link_5, digikey_part_number, tags, notes,)
 
     await interaction.response.send_message(response_message)
 
 @bot.tree.command(name="add_with_dkpn", description="Add item to inventory w/ per item tracking, getting info using a Digikey part number")
-@app_commands.describe(item_name="Item Name", priority="Item Priority, 1-10",
-                       order_quantity="Number of units to order when stock low", 
+@app_commands.describe(item_name="Item Name",
+                       order_quantity="Number of units to order when stock low",
                        unit="Unit name", digikey_part_number="Digikey Part Number",
                        quantity="Number of units on hand", low_threshold="Minimum Stock", 
                        tags="Comma-separated tags", notes="Notes about this item",
                        )
 
-async def add_with_dkpn(interaction: discord.Interaction, digikey_part_number: str, priority: int, 
+async def add_with_dkpn(interaction: discord.Interaction, digikey_part_number: str,
                    quantity: float, order_quantity: float, low_threshold: float, unit: str, item_name: str | None = None, tags: str | None = None, notes: str | None = None):
 
     await interaction.response.defer()
@@ -466,8 +463,8 @@ async def add_with_dkpn(interaction: discord.Interaction, digikey_part_number: s
     else:
         tags = f"per_item_tracking, digikey_dkpn, {tags}"
 
-    response_message = await command_handler.handler_add_item(item_name, priority, order_quantity, "HYBRID", 
-                                                              quantity, low_threshold, unit, 1, None, None, 
+    response_message = await command_handler.handler_add_item(item_name, order_quantity, "HYBRID",
+                                                              quantity, low_threshold, unit, 1, None, None,
                                                               None, None, None, None, None, None, None, None, digikey_part_number, tags, notes,)
 
     await interaction.followup.send(response_message)
@@ -842,7 +839,7 @@ async def printer_info(interaction: discord.Interaction):
     await interaction.followup.send(response_message)
 
 @bot.tree.command(name="update_item", description="Update an existing item")
-@app_commands.describe(sku="Item SKU", item_name="Item Name", priority="Item Priority",
+@app_commands.describe(sku="Item SKU", item_name="Item Name",
                        order_quantity="Number of units to order when stock low", unit="Unit name",
                        quantity="Number of units on hand", low_threshold="Minimum Stock", decrease_amount="Amount to decrease by",
                        digikey_part_number="Digikey Part Number",
@@ -855,7 +852,7 @@ async def printer_info(interaction: discord.Interaction):
                        )
 @app_commands.autocomplete(sku=sku_autocomplete)
 async def update_item(interaction: discord.Interaction, sku: str,
-                      item_name: str | None = None, priority: str | None = None, quantity: str | None = None, order_quantity: str | None = None, 
+                      item_name: str | None = None, quantity: str | None = None, order_quantity: str | None = None,
                       low_threshold: str | None = None, unit: str | None = None, decrease_amount: str | None = None, 
                       digikey_part_number: str | None = None, tags: str | None = None, notes: str | None = None,
                       vendor_1: str | None = None, link_1: str | None = None, vendor_2: str | None = None, link_2: str | None = None, 
@@ -864,7 +861,6 @@ async def update_item(interaction: discord.Interaction, sku: str,
 
     updates = {
             "NAME": item_name,
-            "PRIORITY": priority,
             "ORDER_QUANTITY": order_quantity,
             "TRACKING_MODE": None,
             "QUANTITY_ON_HAND": quantity,

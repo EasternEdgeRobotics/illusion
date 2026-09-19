@@ -43,7 +43,6 @@ def make_low_thread_content(item):
             f"We are getting low on: {item['NAME']}",
             f"SKU: {item['SKU']}",
             f"Tracking Mode: {item['TRACKING_MODE']}",
-            f"Priority: {item['PRIORITY']}",
             f"Order Quantity: {item['ORDER_QUANTITY']}",
             *stock_lines,
         ]

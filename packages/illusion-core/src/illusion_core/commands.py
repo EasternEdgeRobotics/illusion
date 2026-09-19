@@ -49,7 +49,7 @@ class DB_Commands:
         self.started_at = started_at
 
     @reports_service_errors
-    async def handler_add_item(self, item_name, priority, order_quantity, tracking_mode="KANBAN", quantity_on_hand=None, 
+    async def handler_add_item(self, item_name, order_quantity, tracking_mode="KANBAN", quantity_on_hand=None,
                                low_threshold=None, unit=None, decrease_amount=None, vendor_1 = None, link_1 = None, 
                                vendor_2 = None, link_2 = None, vendor_3 = None, link_3 = None, 
                                vendor_4 = None, link_4 = None, vendor_5 = None, link_5 = None, 
@@ -62,7 +62,6 @@ class DB_Commands:
 
         new_item = {
             "NAME": item_name,
-            "PRIORITY": priority,
             "ORDER_QUANTITY": order_quantity,
             "TRACKING_MODE": tracking_mode,
             "QUANTITY_ON_HAND": quantity_on_hand,
@@ -117,7 +116,7 @@ class DB_Commands:
 
         if item is not None:
             if hide_ext:
-                exclude = ["PRIORITY", "TRACKING_MODE", "LOW_THRESHOLD", "UNIT", "LOW_THREAD_ID", "DECREASE_AMOUNT", 
+                exclude = ["TRACKING_MODE", "LOW_THRESHOLD", "UNIT", "LOW_THREAD_ID", "DECREASE_AMOUNT",
                             "VENDOR_1", "LINK_1", "VENDOR_2", "LINK_2", "VENDOR_3", "LINK_3", "VENDOR_4", "LINK_4", "VENDOR_5", "LINK_5"]
 
                 if item["TRACKING_MODE"] == "KANBAN":
@@ -162,11 +161,10 @@ class DB_Commands:
             "VENDOR_4",
             "LINK_5",
             "VENDOR_5",
-            "PRIORITY", 
             "LOW_THREAD_ID",
-            "TRACKING_MODE", 
-            "LOW_THRESHOLD", 
-            "UNIT", 
+            "TRACKING_MODE",
+            "LOW_THRESHOLD",
+            "UNIT",
             "DECREASE_AMOUNT",
             "ORDER_QUANTITY",
             "LOW",
@@ -397,7 +395,6 @@ class DB_Commands:
         # New part: create a QUANTITY-tracked item pre-filled from DigiKey
         new_item = {
             "NAME": description or dkpn,
-            "PRIORITY": 5,
             "ORDER_QUANTITY": None,
             "TRACKING_MODE": "QUANTITY",
             "QUANTITY_ON_HAND": quantity,
@@ -444,7 +441,6 @@ class DB_Commands:
             "VENDOR_4",
             "LINK_5",
             "VENDOR_5",
-            "PRIORITY",
             "LOW_THREAD_ID",
             "TRACKING_MODE",
             "LOW_THRESHOLD",
