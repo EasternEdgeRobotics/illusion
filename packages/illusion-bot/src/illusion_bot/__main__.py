@@ -191,6 +191,58 @@ async def on_ready():
     channel_ready.set()
 
 
+# Discord takes at most 25 choices per autocomplete response and wants them
+# inside about 3 seconds, so these stay one claws call with no extra work. A
+# failure has to come back as an empty list because theres nowhere to show an error
+AUTOCOMPLETE_LIMIT = 25
+CHOICE_LABEL_LIMIT = 100
+
+
+async def sku_autocomplete(interaction: discord.Interaction, current: str):
+    """Suggest items by name, sku, tag or part number, filling in the sku."""
+    try:
+        items = await claws.suggest(current, limit=AUTOCOMPLETE_LIMIT)
+    except ServiceUnavailable:
+        return []
+
+    choices = []
+
+    for item in items:
+        label = f"{item['SKU']} - {item['NAME']}"
+
+        if len(label) > CHOICE_LABEL_LIMIT:
+            label = f"{label[:CHOICE_LABEL_LIMIT - 1]}…"
+
+        choices.append(app_commands.Choice(name=label, value=item["SKU"]))
+
+    return choices
+
+
+async def tag_autocomplete(interaction: discord.Interaction, current: str):
+    """Suggest tags that already exist, so we stop growing near duplicates."""
+    try:
+        tags = await claws.tags()
+    except ServiceUnavailable:
+        return []
+
+    wanted = current.strip().casefold()
+    choices = []
+
+    for tag in tags:
+        name = tag["TAG"]
+
+        if wanted and wanted not in name.casefold():
+            continue
+
+        choices.append(
+            app_commands.Choice(name=f"{name} ({tag['COUNT']})", value=name)
+        )
+
+        if len(choices) == AUTOCOMPLETE_LIMIT:
+            break
+
+    return choices
+
 
 @bot.tree.command(name="ping", description="Check bot latency")
 async def ping(interaction: discord.Interaction):
@@ -233,6 +285,7 @@ async def about(interaction: discord.Interaction):
 
 @bot.tree.command(name="resolve", description="Mark low stock warnings as resolved")
 @app_commands.describe(sku="Item Sku")
+@app_commands.autocomplete(sku=sku_autocomplete)
 async def resolve(interaction: discord.Interaction, sku: str | None = None):
     channel = interaction.channel
 
@@ -253,24 +306,28 @@ async def resolve(interaction: discord.Interaction, sku: str | None = None):
 
 @bot.tree.command(name="set_stock", description="Set current stock")
 @app_commands.describe(sku="Item Sku", value="Stock amount")
+@app_commands.autocomplete(sku=sku_autocomplete)
 async def set_stock(interaction: discord.Interaction, sku: str, value: str):
     response_message = await command_handler.handler_set_stock(sku, value)
     await interaction.response.send_message(response_message)
 
 @bot.tree.command(name="decrease", description="Decrease current stock")
 @app_commands.describe(sku="Item Sku", amount="Amount to decrease by")
+@app_commands.autocomplete(sku=sku_autocomplete)
 async def decrease(interaction: discord.Interaction, sku: str, amount: str | None = "1"):
     response_message = await command_handler.handler_decrease(sku, amount)
     await interaction.response.send_message(response_message)
 
 @bot.tree.command(name="increase", description="Increase current stock")
 @app_commands.describe(sku="Item Sku", amount="Amount to increase by")
+@app_commands.autocomplete(sku=sku_autocomplete)
 async def increase(interaction: discord.Interaction, sku: str, amount: str | None = "1"):
     response_message = await command_handler.handler_increase(sku, amount)
     await interaction.response.send_message(response_message)
 
 @bot.tree.command(name="info", description="Get info about an item")
 @app_commands.describe(sku="Item Sku", hide_ext="Show or hide extra values")
+@app_commands.autocomplete(sku=sku_autocomplete)
 async def info(interaction: discord.Interaction, sku: str, hide_ext: bool = True):
     await interaction.response.defer()
     cleaned_sku = illusion_helpers.clean_sku(sku)
@@ -288,6 +345,7 @@ async def info(interaction: discord.Interaction, sku: str, hide_ext: bool = True
 
 @bot.tree.command(name="delete", description="Delete an item")
 @app_commands.describe(sku="Item Sku")
+@app_commands.autocomplete(sku=sku_autocomplete)
 async def delete(interaction: discord.Interaction, sku: str):
     response_message = await command_handler.handler_delete_item(sku)
     await interaction.response.send_message(response_message)
@@ -424,6 +482,7 @@ async def search(interaction: discord.Interaction, name: str):
 
 @bot.tree.command(name="search_tag", description="Search inventory by tag")
 @app_commands.describe(tag="Tag to search for")
+@app_commands.autocomplete(tag=tag_autocomplete)
 async def search_tag(interaction: discord.Interaction, tag: str):
     await interaction.response.defer()
 
@@ -438,12 +497,14 @@ async def get_tags(interaction: discord.Interaction):
 
 @bot.tree.command(name="add_tag", description="Add a tag to an item")
 @app_commands.describe(sku="Item SKU", tag="Tag to add")
+@app_commands.autocomplete(sku=sku_autocomplete, tag=tag_autocomplete)
 async def add_tag(interaction: discord.Interaction, sku: str, tag: str):
     response_message = await command_handler.handler_add_tag(sku, tag)
     await interaction.response.send_message(response_message)
 
 @bot.tree.command(name="generate_barcode", description="Generate a barcode")
 @app_commands.describe(sku="Item Sku")
+@app_commands.autocomplete(sku=sku_autocomplete)
 async def generate_barcode(interaction: discord.Interaction, sku: str):
     sku = illusion_helpers.clean_sku(sku)
     
@@ -647,7 +708,8 @@ async def lipgloss_event_loop():
         app_commands.Choice(name="Cable Label w/ QR Code (Requires sku and text_line_1)", value="cable_label_qr"),
     ]
 )
-async def print_niimbot(interaction: discord.Interaction, style: app_commands.Choice[str], sku: str | None = None, 
+@app_commands.autocomplete(sku=sku_autocomplete)
+async def print_niimbot(interaction: discord.Interaction, style: app_commands.Choice[str], sku: str | None = None,
                         text_line_1: str | None = None, text_line_2: str | None = None, get_text_from_sku: bool = False,
                         quantity: app_commands.Range[int, 1, MAX_COPIES] = 1,):
     if not PRINTING_ENABLED:
@@ -791,8 +853,8 @@ async def printer_info(interaction: discord.Interaction):
                        vendor_5="Source 5 for Item", link_5="Source 5 Purchase Link",
                        tags="Comma-separated tags", notes="Notes about this item",
                        )
-
-async def update_item(interaction: discord.Interaction, sku: str, 
+@app_commands.autocomplete(sku=sku_autocomplete)
+async def update_item(interaction: discord.Interaction, sku: str,
                       item_name: str | None = None, priority: str | None = None, quantity: str | None = None, order_quantity: str | None = None, 
                       low_threshold: str | None = None, unit: str | None = None, decrease_amount: str | None = None, 
                       digikey_part_number: str | None = None, tags: str | None = None, notes: str | None = None,

@@ -499,6 +499,10 @@ def create_app(config_path="./claws.yaml"):
     async def search(name: str, limit: int = 10):
         return inventory.search_items(name, limit=limit)
 
+    @app.get("/suggest", dependencies=auth)
+    async def suggest(query: str = "", limit: int = 25):
+        return inventory.suggest_items(query, limit=limit)
+
     @app.get("/tags", dependencies=auth)
     async def tags():
         return inventory.get_tags()

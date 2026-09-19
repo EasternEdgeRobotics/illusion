@@ -1082,6 +1082,35 @@ class SpreadsheetManager:
 
         return [self._row_to_dict(row) for _, _, row in scored[:limit]]
         
+    def suggest_items(self, query: str, limit: int = 25) -> list[dict[str, str]]:
+        """sku and name only, for the bot's autocomplete.
+
+        Same ranking as search_items, just a much smaller payload, since this
+        runs on every keystroke and only ever fills a dropdown. An empty query
+        is the moment the field is focused, so list the top of the inventory
+        rather than nothing.
+        """
+        query = query.strip()
+
+        if query:
+            return [
+                {"SKU": item["SKU"], "NAME": item["NAME"]}
+                for item in self.search_items(query, limit=limit)
+            ]
+
+        with self.lock:
+            rows = self.connection.execute(
+                """
+                SELECT sku, name
+                FROM items
+                ORDER BY name COLLATE NOCASE
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+
+        return [{"SKU": row["sku"], "NAME": row["name"]} for row in rows]
+
     def get_item_by_dkpn(self, dkpn: str) -> dict[str, Any] | None:
         with self.lock:
             row = self.connection.execute(
