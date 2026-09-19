@@ -9,7 +9,6 @@ QUEUE_FIELD_NAMES = {
 FIELD_NAMES = {
     "SKU": "SKU",
     "NAME": "Name",
-    "PRIORITY": "Priority",
     "ORDER_QUANTITY": "Order Qty",
     "TRACKING_MODE": "Tracking Mode",
     "QUANTITY_ON_HAND": "Quantity",

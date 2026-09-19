@@ -78,14 +78,14 @@ class SpreadsheetManager:
         self.sku_header = "SKU"
         self.sku_padding = 6
 
-        self.default_headers = ["SKU", "NAME", "PRIORITY", "ORDER_QUANTITY", "LOW", "LOW_THREAD_ID",
+        self.default_headers = ["SKU", "NAME", "ORDER_QUANTITY", "LOW", "LOW_THREAD_ID",
                                 "TRACKING_MODE", "QUANTITY_ON_HAND", "LOW_THRESHOLD", "UNIT", "DECREASE_AMOUNT",
                                 "LINK_1", "VENDOR_1", "LINK_2", "VENDOR_2", "LINK_3", "VENDOR_3",
                                 "LINK_4", "VENDOR_4", "LINK_5", "VENDOR_5", "DIGIKEY_PART_NUMBER",
                                 "TAGS", "NOTES",
         ]
 
-        self.item_fields = {"SKU", "NAME", "PRIORITY", "ORDER_QUANTITY", "LOW",}
+        self.item_fields = {"SKU", "NAME", "ORDER_QUANTITY", "LOW",}
 
         self.lock = threading.RLock()
 
@@ -145,6 +145,12 @@ class SpreadsheetManager:
         # 1.3.X fix (1.4.0)
         self._remove_literal_none_tags()
 
+        # 1.6.0 migration
+        if "priority" in existing_columns:
+            self.connection.execute(
+                "ALTER TABLE items DROP COLUMN priority"
+            )
+
     def _remove_literal_none_tags(self) -> None:
         rows = self.connection.execute(
             """
@@ -178,7 +184,6 @@ class SpreadsheetManager:
                 CREATE TABLE IF NOT EXISTS items (
                     sku TEXT PRIMARY KEY,
                     name TEXT NOT NULL,
-                    priority TEXT,
                     order_quantity TEXT,
                     low_thread_id INTEGER,
                     low INTEGER NOT NULL DEFAULT 0,
@@ -321,7 +326,6 @@ class SpreadsheetManager:
         item = {
             "SKU": row["sku"],
             "NAME": row["name"],
-            "PRIORITY": row["priority"],
             "ORDER_QUANTITY": row["order_quantity"],
             "LOW": self._bool_to_python(row["low"]),
             "TRACKING_MODE": row["tracking_mode"],
@@ -422,7 +426,6 @@ class SpreadsheetManager:
                 SELECT
                     sku,
                     name,
-                    priority,
                     order_quantity,
                     low,
                     tracking_mode,
@@ -473,7 +476,7 @@ class SpreadsheetManager:
         with self.lock:
             rows = self.connection.execute(
                 """
-                SELECT sku, name, priority, order_quantity, low, tracking_mode, quantity_on_hand, low_threshold, unit, decrease_amount, low_thread_id, digikey_part_number, tags, notes
+                SELECT sku, name, order_quantity, low, tracking_mode, quantity_on_hand, low_threshold, unit, decrease_amount, low_thread_id, digikey_part_number, tags, notes
                 FROM items
                 ORDER BY sku
                 """
@@ -497,7 +500,7 @@ class SpreadsheetManager:
         with self.lock:
             row = self.connection.execute(
                 """
-                SELECT sku, name, priority, order_quantity, low, tracking_mode, quantity_on_hand, low_threshold, unit, decrease_amount, low_thread_id, digikey_part_number, tags, notes
+                SELECT sku, name, order_quantity, low, tracking_mode, quantity_on_hand, low_threshold, unit, decrease_amount, low_thread_id, digikey_part_number, tags, notes
                 FROM items
                 WHERE sku = ?
                 """,
@@ -514,7 +517,6 @@ class SpreadsheetManager:
             new_sku = self._generate_sku()
 
             name = item_data.get("NAME")
-            priority = item_data.get("PRIORITY")
             order_quantity = item_data.get("ORDER_QUANTITY")
             low = self._normalize_bool(item_data.get("LOW"))
 
@@ -543,7 +545,6 @@ class SpreadsheetManager:
                 INSERT INTO items (
                     sku,
                     name,
-                    priority,
                     order_quantity,
                     low,
                     tracking_mode,
@@ -555,12 +556,11 @@ class SpreadsheetManager:
                     tags,
                     notes
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     new_sku,
                     name,
-                    priority,
                     order_quantity,
                     low,
                     tracking_mode,
@@ -615,7 +615,7 @@ class SpreadsheetManager:
                 if header not in self.default_headers:
                     raise ValueError(f"Header '{header}' does not exist.")
 
-                if header in {"NAME", "PRIORITY", "ORDER_QUANTITY", "LOW", "TRACKING_MODE", "QUANTITY_ON_HAND", "LOW_THRESHOLD", "UNIT", "DECREASE_AMOUNT", "LOW_THREAD_ID", "DIGIKEY_PART_NUMBER", "TAGS", "NOTES"}:
+                if header in {"NAME", "ORDER_QUANTITY", "LOW", "TRACKING_MODE", "QUANTITY_ON_HAND", "LOW_THRESHOLD", "UNIT", "DECREASE_AMOUNT", "LOW_THREAD_ID", "DIGIKEY_PART_NUMBER", "TAGS", "NOTES"}:
                     item_updates[header] = value
                     continue
 
@@ -631,7 +631,6 @@ class SpreadsheetManager:
             if item_updates:
                 column_map = {
                     "NAME": "name",
-                    "PRIORITY": "priority",
                     "ORDER_QUANTITY": "order_quantity",
                     "LOW": "low",
                     "TRACKING_MODE": "tracking_mode",
@@ -766,7 +765,6 @@ class SpreadsheetManager:
                 SELECT
                     sku,
                     name,
-                    priority,
                     order_quantity,
                     low,
                     tracking_mode,
@@ -1026,7 +1024,7 @@ class SpreadsheetManager:
         with self.lock:
             rows = self.connection.execute(
                 """
-                SELECT sku, name, priority, order_quantity, low, tracking_mode, quantity_on_hand, low_threshold, unit, decrease_amount, low_thread_id, digikey_part_number, tags, notes
+                SELECT sku, name, order_quantity, low, tracking_mode, quantity_on_hand, low_threshold, unit, decrease_amount, low_thread_id, digikey_part_number, tags, notes
                 FROM items
                 """
             ).fetchall()
