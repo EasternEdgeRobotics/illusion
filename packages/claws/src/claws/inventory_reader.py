@@ -1,9 +1,72 @@
 from __future__ import annotations
 
+import re
 import sqlite3
 import threading
 from pathlib import Path
 from typing import Any
+
+from rapidfuzz import fuzz, process
+
+# Search scoring. Every word of the query gets a 0-100 score against each column
+# below, and the row keeps the best column per word. A row only survives if all
+# of its words land somewhere, so "pla black" needs both, in any order.
+_SEARCH_WORD_RE = re.compile(r"[a-z0-9]+")
+
+# (column, weight, fuzzy). Fuzzy matching is only worth its cost on the columns
+# people actually type at, notes and part numbers are there for exact recall.
+_SEARCH_FIELDS = (
+    ("name", 1.0, True),
+    ("tags", 0.9, True),
+    ("sku", 0.85, False),
+    ("digikey_part_number", 0.85, False),
+    ("notes", 0.5, False),
+)
+
+_SEARCH_FUZZY_FLOOR = 72  # below this a misspelling is just a different word
+_SEARCH_WORD_FLOOR = 40   # every query word has to clear this somewhere
+
+
+def _search_words(value: Any) -> list[str]:
+    return _SEARCH_WORD_RE.findall(str(value or "").casefold())
+
+
+def _score_word(word: str, words: list[str], compact: str, fuzzy: bool) -> float:
+    """Best score for one query word in one column, 0 if it is not in there."""
+    best = 0.0
+
+    for candidate in words:
+        if candidate == word:
+            return 100.0
+
+        if candidate.startswith(word):
+            best = max(best, 94.0)
+        elif word in candidate:
+            best = max(best, 86.0)
+
+    if best:
+        return best
+
+    # "m3x12" should still find "M3 x 12mm", so retry against the column with
+    # its spaces taken out before paying for fuzzy matching
+    if word in compact:
+        return 80.0
+
+    # Never fuzzy match a word with a digit in it. "12mm" and "10mm" are one
+    # edit apart and are different screws, guessing there hands someone the
+    # wrong part. Sizes and part numbers have to be typed right.
+    if not fuzzy or any(character.isdigit() for character in word):
+        return 0.0
+
+    match = process.extractOne(
+        word, words, scorer=fuzz.ratio, score_cutoff=_SEARCH_FUZZY_FLOOR
+    )
+
+    if match is None:
+        return 0.0
+
+    # Scaled so a typo can never outrank a word that really is in the column
+    return match[1] * 0.78
 
 
 class SpreadsheetManager:
@@ -309,13 +372,6 @@ class SpreadsheetManager:
 
             return str(row["sku"])
         
-    def _escape_like(self, value: str) -> str:
-        return (
-            value.replace("\\", "\\\\")
-            .replace("%", "\\%")
-            .replace("_", "\\_")
-        )
-
     def _split_tags(self, value: Any) -> list[str]:
         if value is None:
             return []
@@ -956,39 +1012,75 @@ class SpreadsheetManager:
         if not name_query:
             return []
 
-        escaped_query = self._escape_like(name_query)
+        query_words = _search_words(name_query)
 
-        contains_pattern = f"%{escaped_query}%"
-        prefix_pattern = f"{escaped_query}%"
+        if not query_words:
+            return []
 
+        query_folded = name_query.casefold()
+        query_compact = "".join(query_words)
+
+        # The whole table, scored in here. At a couple thousand items that is
+        # cheaper than it sounds, and it is the only way to tolerate typos
+        # without an index sqlite cannot give us (no spellfix1 in our build)
         with self.lock:
             rows = self.connection.execute(
                 """
                 SELECT sku, name, priority, order_quantity, low, tracking_mode, quantity_on_hand, low_threshold, unit, decrease_amount, low_thread_id, digikey_part_number, tags, notes
                 FROM items
-                WHERE LOWER(name) LIKE LOWER(?) ESCAPE '\\'
-                OR LOWER(COALESCE(tags, '')) LIKE LOWER(?) ESCAPE '\\'
-                ORDER BY
-                    CASE
-                        WHEN LOWER(name) = LOWER(?) THEN 0
-                        WHEN LOWER(name) LIKE LOWER(?) ESCAPE '\\' THEN 1
-                        WHEN LOWER(COALESCE(tags, '')) LIKE LOWER(?) ESCAPE '\\' THEN 2
-                        ELSE 3
-                    END,
-                    name COLLATE NOCASE
-                LIMIT ?
-                """,
-                (
-                    contains_pattern,
-                    contains_pattern,
-                    name_query,
-                    prefix_pattern,
-                    prefix_pattern,
-                    limit,
-                ),
+                """
             ).fetchall()
 
-            return [self._row_to_dict(row) for row in rows]
+        scored = []
+
+        for row in rows:
+            columns = []
+
+            for column, weight, fuzzy in _SEARCH_FIELDS:
+                words = _search_words(row[column])
+                columns.append((words, "".join(words), weight, fuzzy))
+
+            word_scores = []
+
+            for word in query_words:
+                best = 0.0
+
+                for words, compact, weight, fuzzy in columns:
+                    best = max(best, weight * _score_word(word, words, compact, fuzzy))
+
+                    if best == 100.0:  # an exact name hit, nothing can beat it
+                        break
+
+                if best < _SEARCH_WORD_FLOOR:
+                    word_scores = None
+                    break
+
+                word_scores.append(best)
+
+            if word_scores is None:  # a word landed nowhere, so the row is out
+                continue
+
+            score = sum(word_scores) / len(word_scores)
+
+            # Put the obvious answers on top: an exact name beats a name that
+            # starts with the query, which beats one that only contains it
+            name_folded = str(row["name"] or "").casefold()
+
+            if name_folded == query_folded:
+                score += 1000.0
+            elif name_folded.startswith(query_folded):
+                score += 500.0
+            elif query_compact in "".join(_search_words(row["name"])):
+                score += 250.0
+
+            if query_folded in {tag.casefold() for tag in self._split_tags(row["tags"])}:
+                score += 200.0
+
+            scored.append((-score, name_folded, row))
+
+        scored.sort(key=lambda entry: entry[:2])
+
+        return [self._row_to_dict(row) for _, _, row in scored[:limit]]
         
     def get_item_by_dkpn(self, dkpn: str) -> dict[str, Any] | None:
         with self.lock:
