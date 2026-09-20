@@ -5,6 +5,8 @@ frontend rather than illusion-core: claws and lipgloss must never depend on
 discord, and lipgloss now returns plain data for callers to render.
 """
 
+import io
+
 import discord
 
 from illusion_core.helpers import FIELD_NAMES, format_quantity, get_vendor_links, make_table
@@ -26,6 +28,26 @@ QUEUE_FIELD_NAMES = {
 
 EMBED_COLOUR = discord.Colour.from_rgb(r=192, g=140, b=149) #C08C95
 ALERT_COLOUR = discord.Colour.from_rgb(r=176, g=74, b=74) #B04A4A
+
+# The preview travels as an attachment and the embed points at it by name, so
+# both sides have to agree on what that name is
+LABEL_IMAGE_FILENAME = "label.png"
+
+# Styles are named for the user in the /print choices, but the command rewrites
+# some of them once it knows how many lines it got, so the resolved name is what
+# has to be spelled out on the preview
+LABEL_STYLE_NAMES = {
+    "slim_barcode": "Barcode",
+    "classic_barcode": "Barcode",
+    "label_barcode": "Label w/ Barcode",
+    "label_1_line": "Label",
+    "label_2_line": "Label, 2 lines",
+    "label_1_line_qr": "Label w/ QR Code",
+    "label_2_line_qr": "Label w/ QR Code, 2 lines",
+    "cable_label": "Cable Label",
+    "cable_label_sku": "Cable Label w/ SKU",
+    "cable_label_qr": "Cable Label w/ QR Code",
+}
 
 
 def make_low_thread_content(item):
@@ -194,6 +216,44 @@ def make_embed(data, exclude=None, field_names=None, title=None, description=Non
             value="\n".join(lines),
             inline=False,
         )
+
+    return embed
+
+
+def label_file(image_bytes):
+    """The preview as an attachment.
+
+    A fresh one per message: discord.File wraps a buffer that is read to the end
+    when it is sent, so the same object cannot be reused for a second message.
+    """
+    return discord.File(io.BytesIO(image_bytes), filename=LABEL_IMAGE_FILENAME)
+
+
+def label_embed(title, description, style, sku=None, line_1=None, line_2=None,
+                copies=1, urgent=False, has_image=True):
+    """A label, shown with the values it was built from.
+
+    Empty fields are left out rather than shown as N/A: which fields a style
+    even uses varies, and a preview padded with blanks reads as though
+    something went missing.
+    """
+    embed = discord.Embed(
+        title=title,
+        description=description,
+        color=ALERT_COLOUR if urgent else EMBED_COLOUR,
+    )
+
+    if has_image:
+        embed.set_image(url=f"attachment://{LABEL_IMAGE_FILENAME}")
+
+    embed.add_field(name="Style", value=LABEL_STYLE_NAMES.get(style, style), inline=True)
+
+    if copies > 1:
+        embed.add_field(name="Copies", value=str(copies), inline=True)
+
+    for name, value in (("SKU", sku), ("Line 1", line_1), ("Line 2", line_2)):
+        if value:
+            embed.add_field(name=name, value=str(value), inline=True)
 
     return embed
 

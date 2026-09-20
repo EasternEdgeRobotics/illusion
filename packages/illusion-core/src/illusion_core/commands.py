@@ -277,14 +277,35 @@ class DB_Commands:
     async def handler_generate_barcode(self, sku):
         return await self.lipgloss.render(style="classic_barcode", sku=sku, width=350, height=280, rotate=0)
 
-    @reports_service_errors
-    async def handler_print(self, style, sku = None, text_line_1 = None, text_line_2 = None, quantity = 1, reply_to = None, source = "terminal"):
+    async def handler_preview_label(self, style, sku = None, text_line_1 = None, text_line_2 = None, scale = 3):
+        """PNG bytes of exactly what handler_print would put on the roll.
+
+        Undecorated like handler_generate_barcode: the caller is holding an
+        image, not a message, so it has to deal with the outage itself rather
+        than be handed a string where bytes were expected.
+        """
         if sku != None:
             sku = illusion_helpers.clean_sku(sku)
 
-        result = await self.lipgloss.print_label(
+        return await self.lipgloss.preview(
+            style=style, sku=sku, line_1=text_line_1, line_2=text_line_2, scale=scale,
+        )
+
+    async def handler_print_job(self, style, sku = None, text_line_1 = None, text_line_2 = None, quantity = 1, reply_to = None, source = "terminal"):
+        """The whole print result, for callers that need the job id to offer a cancel."""
+        if sku != None:
+            sku = illusion_helpers.clean_sku(sku)
+
+        return await self.lipgloss.print_label(
             style=style, sku=sku, line_1=text_line_1, line_2=text_line_2,
             copies=quantity, source=source, reply_to=reply_to,
+        )
+
+    @reports_service_errors
+    async def handler_print(self, style, sku = None, text_line_1 = None, text_line_2 = None, quantity = 1, reply_to = None, source = "terminal"):
+        result = await self.handler_print_job(
+            style=style, sku=sku, text_line_1=text_line_1, text_line_2=text_line_2,
+            quantity=quantity, reply_to=reply_to, source=source,
         )
 
         return result["message"]
@@ -326,6 +347,11 @@ class DB_Commands:
     async def handler_print_clear(self):
         return await self.lipgloss.clear()
 
+    async def handler_print_cancel_job(self, job_id):
+        """The whole cancel result, for callers that need to know whether it
+        actually caught the job."""
+        return await self.lipgloss.cancel(job_id)
+
     @reports_service_errors
     async def handler_print_cancel(self, job_id):
         try:
@@ -333,7 +359,7 @@ class DB_Commands:
         except ValueError:
             return f"Invalid job id: {job_id}"
 
-        return await self.lipgloss.cancel(job_id)
+        return (await self.handler_print_cancel_job(job_id))["message"]
 
     @reports_service_errors
     async def handler_update_item(self, sku, updates: dict[str, object]):
