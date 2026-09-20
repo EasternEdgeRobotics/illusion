@@ -12,6 +12,9 @@ from illusion_core.helpers import FIELD_NAMES, format_quantity, get_vendor_links
 # Discord allows 25 fields per embed, and a queue that long is unreadable anyway
 MAX_EMBED_JOBS = 20
 
+# Discord maxes out at 25 embeds, anything higher gets rejected
+MAX_EMBED_FIELDS = 25
+
 QUEUE_FIELD_NAMES = {
     "JOB_ID": "Job",
     "DESCRIPTION": "Label",
@@ -38,10 +41,15 @@ def make_low_thread_content(item):
             ]
         )
 
+    # Only when it is set: whoever restocks this has to go and find the thing,
+    # and an empty line saying so helps nobody
+    location_lines = [f"Location: {item['LOCATION']}"] if item.get("LOCATION") else []
+
     return "\n".join(
         [
             f"We are getting low on: {item['NAME']}",
             f"SKU: {item['SKU']}",
+            *location_lines,
             f"Tracking Mode: {item['TRACKING_MODE']}",
             f"Order Quantity: {item['ORDER_QUANTITY']}",
             *stock_lines,
@@ -125,6 +133,9 @@ def make_embed(data, exclude=None, field_names=None, title=None, description=Non
             if field in exclude or field == row_name:
                 continue
 
+            if added_fields == MAX_EMBED_FIELDS:
+                break
+
             value = row.get(field, missing)
 
             if value is None or value == "":
@@ -155,6 +166,14 @@ def make_embed(data, exclude=None, field_names=None, title=None, description=Non
     if not columns:
         embed.description = embed.description or "No displayable fields."
         return embed
+
+    hidden = len(rows) - MAX_EMBED_FIELDS
+
+    if hidden > 0:
+        rows = rows[:MAX_EMBED_FIELDS]
+        embed.description = "\n".join(
+            filter(None, [embed.description, f"Only the first {MAX_EMBED_FIELDS} are listed, {hidden} more behind them."])
+        )
 
     for index, row in enumerate(rows, start=1):
         lines = []

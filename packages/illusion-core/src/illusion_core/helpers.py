@@ -9,6 +9,7 @@ QUEUE_FIELD_NAMES = {
 FIELD_NAMES = {
     "SKU": "SKU",
     "NAME": "Name",
+    "LOCATION": "Location",
     "ORDER_QUANTITY": "Order Qty",
     "TRACKING_MODE": "Tracking Mode",
     "QUANTITY_ON_HAND": "Quantity",
@@ -27,7 +28,11 @@ FIELD_NAMES = {
     "LINK_4": "Link 4",
     "VENDOR_5": "Vendor 5",
     "LINK_5": "Link 5",
-    "DIGIKEY_PART_NUMBER": "Digikey Part Num"
+    "DIGIKEY_PART_NUMBER": "Digikey Part Num",
+    # Not item fields: the rows get_tags and get_locations return
+    "TAG": "Tag",
+    "COUNT": "Items",
+    "SUB_GROUPS": "Sub-groups",
 }
 
 def format_quantity(value):

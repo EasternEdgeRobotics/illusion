@@ -119,6 +119,21 @@ async def command_help():
             "DESCRIPTION": "Add a tag to an item",
         },
         {
+            "COMMAND": "get_locations",
+            "USAGE": "get_locations",
+            "DESCRIPTION": "List every location in use",
+        },
+        {
+            "COMMAND": "where",
+            "USAGE": "where <location>",
+            "DESCRIPTION": "List the items in a location",
+        },
+        {
+            "COMMAND": "set_location",
+            "USAGE": "set_location <sku> [location]",
+            "DESCRIPTION": "Set where an item lives, no location clears it",
+        },
+        {
             "COMMAND": "increase",
             "USAGE": "increase <sku> [amount]",
             "DESCRIPTION": "Increase item stock",
@@ -260,6 +275,16 @@ async def terminal_loop():
                 response_message = render(await command_handler.handler_get_tags())
             elif command == "add_tag" and len(parts) == 3:
                 response_message = await command_handler.handler_add_tag(parts[1], parts[2])
+            elif command == "get_locations" and len(parts) >= 1:
+                response_message = render(await command_handler.handler_get_locations())
+            elif command == "where" and len(parts) >= 2:
+                # A location is several words more often than not, so take the
+                # rest of the line rather than only the next word
+                location = " ".join(" ".join(parts[1:]).split())
+                response_message = render(await command_handler.handler_search_location(location))
+            elif command == "set_location" and len(parts) >= 2:
+                location = parts[2] if len(parts) == 3 else None
+                response_message = await command_handler.handler_set_location(parts[1], location)
             elif parts[0].startswith("EER-") and len(parts) >= 1: # Basic bar code scanner support
                 response_message = await command_handler.handler_decrease(parts[0])
             elif text.startswith("[)>") or (text.isdigit() and len(text) > 8): # Digikey data matrix
@@ -340,9 +365,7 @@ async def terminal_loop():
             # Fail fast: the command is simply not applied, and says so
             response_message = f"Service unavailable, command not applied.\n{e}"
         except Exception as e:
-            # One bad command must never take the terminal down with it. The
-            # kiosk is the only way to touch inventory from the closet, and a
-            # dead prompt there means someone has to go find a keyboard.
+            # One bad command must never take the terminal down with it.
             response_message = f"Command failed: {e}"
 
         if response_message != None:

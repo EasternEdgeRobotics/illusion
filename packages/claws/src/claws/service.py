@@ -27,6 +27,7 @@ from illusion_core.fleet import (
     health_payload,
 )
 from illusion_core.uptime import service_uptime_ms, system_uptime_ms
+from claws import locations
 from claws.digikey_client import DigiKeyClient
 from claws.inventory_reader import SpreadsheetManager
 
@@ -54,6 +55,10 @@ class Quantity(BaseModel):
 
 class TagRequest(BaseModel):
     tag: str
+
+
+class LocationRequest(BaseModel):
+    location: str | None = None
 
 
 class VendorRequest(BaseModel):
@@ -489,6 +494,26 @@ def create_app(config_path="./claws.yaml"):
 
         return {"added": inventory.add_tag(sku, request.tag)}
 
+    @app.get("/items/{sku}/location", dependencies=auth)
+    async def item_location(sku: str):
+        return {"location": _item_or_404(sku)["LOCATION"]}
+
+    # A location is one value rather than a list, so it is set rather than added,
+    # and an empty one clears it
+    @app.put("/items/{sku}/location", dependencies=auth)
+    async def set_location(sku: str, request: LocationRequest):
+        _item_or_404(sku)
+
+        inventory.set_location(sku, request.location)
+        inventory.save()
+
+        item = inventory.get_item(sku)
+
+        # Whether it landed on a shelf that exists. A location off the
+        # catalogue is allowed, but it is worth telling whoever typed it, since
+        # at that point it is as likely to be a typo as a new shelf.
+        return {"item": item, "known": locations.is_known(item["LOCATION"])}
+
     @app.post("/items/{sku}/vendors", dependencies=auth)
     async def add_vendor(sku: str, request: VendorRequest):
         _item_or_404(sku)
@@ -510,6 +535,21 @@ def create_app(config_path="./claws.yaml"):
     @app.get("/tags/{tag}/items", dependencies=auth)
     async def items_by_tag(tag: str):
         return inventory.get_items_by_tag(tag)
+
+    @app.get("/locations", dependencies=auth)
+    async def all_locations():
+        return inventory.get_locations()
+
+    # Before the {location:path} route below, which would otherwise swallow it
+    @app.get("/locations/suggest", dependencies=auth)
+    async def suggest_locations(query: str = "", limit: int = 25):
+        return inventory.suggest_locations(query, limit=limit)
+
+    # :path because a location is free text off a shelf label, and "Acrylic /
+    # Polycarbonate Scrap" is one location rather than two path segments
+    @app.get("/locations/{location:path}/items", dependencies=auth)
+    async def items_by_location(location: str):
+        return inventory.get_items_by_location(location)
 
     @app.post("/digikey/scan", dependencies=auth)
     async def digikey_scan(request: ScanRequest):
