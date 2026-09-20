@@ -570,6 +570,10 @@ async def run():
     for task in pending:
         task.cancel()
 
+    # graceful_exit stops the health server and waits for it
+    if shutdown_event.is_set():
+        return
+
     if terminal_task not in done:
         # The health server stopped on its own, which only happens when
         # something is wrong. Re-raise it so the process exits non-zero and the
