@@ -8,6 +8,8 @@ from typing import Any
 
 from rapidfuzz import fuzz, process
 
+from claws import locations
+
 # Search scoring. Every word of the query gets a 0-100 score against each column
 # below, and the row keeps the best column per word. A row only survives if all
 # of its words land somewhere, so "pla black" needs both, in any order.
@@ -18,6 +20,7 @@ _SEARCH_WORD_RE = re.compile(r"[a-z0-9]+")
 _SEARCH_FIELDS = (
     ("name", 1.0, True),
     ("tags", 0.9, True),
+    ("location", 0.9, True),
     ("sku", 0.85, False),
     ("digikey_part_number", 0.85, False),
     ("notes", 0.5, False),
@@ -69,6 +72,19 @@ def _score_word(word: str, words: list[str], compact: str, fuzzy: bool) -> float
     return match[1] * 0.78
 
 
+def _like_prefix(location: str) -> str:
+    """A LIKE pattern for everything filed under this location.
+
+    Escaped, because a location is free text and a stray % in one would
+    otherwise turn a lookup of one shelf into a lookup of every shelf.
+    """
+    escaped = (
+        location.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    )
+
+    return f"{escaped}{locations.SEPARATOR}%"
+
+
 class SpreadsheetManager:
     def __init__(self, file_path: str, sheet_name: str = "Inventory", sku_prefix: str = "EER"):
         self.file_path = Path(file_path)
@@ -78,7 +94,7 @@ class SpreadsheetManager:
         self.sku_header = "SKU"
         self.sku_padding = 6
 
-        self.default_headers = ["SKU", "NAME", "ORDER_QUANTITY", "LOW", "LOW_THREAD_ID",
+        self.default_headers = ["SKU", "NAME", "LOCATION", "ORDER_QUANTITY", "LOW", "LOW_THREAD_ID",
                                 "TRACKING_MODE", "QUANTITY_ON_HAND", "LOW_THRESHOLD", "UNIT", "DECREASE_AMOUNT",
                                 "LINK_1", "VENDOR_1", "LINK_2", "VENDOR_2", "LINK_3", "VENDOR_3",
                                 "LINK_4", "VENDOR_4", "LINK_5", "VENDOR_5", "DIGIKEY_PART_NUMBER",
@@ -151,6 +167,55 @@ class SpreadsheetManager:
                 "ALTER TABLE items DROP COLUMN priority"
             )
 
+        if "location" not in existing_columns:
+            self.connection.execute(
+                "ALTER TABLE items ADD COLUMN location TEXT"
+            )
+
+        # After the migration rather than in _create_tables, because on an older
+        # database the column does not exist until the line above has run
+        self.connection.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_items_location_nocase
+                ON items (location COLLATE NOCASE)
+            """
+        )
+
+        self._canonicalize_locations()
+
+    def _canonicalize_locations(self) -> None:
+        """Rewrite stored locations the catalogue now spells differently.
+
+        Not tied to a version, because the catalogue is the thing that changes:
+        the day "Screw Wall" becomes an alias of "Wall Storage", every item
+        already on that wall is stored under a name that a lookup of the wall
+        no longer matches. Renaming a location is meant to be a one line edit
+        to the catalogue, and this is what makes it one.
+        """
+        rows = self.connection.execute(
+            """
+            SELECT sku, location
+            FROM items
+            WHERE location IS NOT NULL
+            AND TRIM(location) != ''
+            """
+        ).fetchall()
+
+        for row in rows:
+            canonical = locations.resolve(row["location"])
+
+            if canonical is None or canonical == row["location"]:
+                continue
+
+            self.connection.execute(
+                """
+                UPDATE items
+                SET location = ?
+                WHERE sku = ?
+                """,
+                (canonical, row["sku"]),
+            )
+
     def _remove_literal_none_tags(self) -> None:
         rows = self.connection.execute(
             """
@@ -194,6 +259,7 @@ class SpreadsheetManager:
                     unit TEXT,
                     decrease_amount REAL NOT NULL DEFAULT 1.0,
 
+                    location TEXT,
                     tags TEXT,
                     notes TEXT,
 
@@ -326,6 +392,7 @@ class SpreadsheetManager:
         item = {
             "SKU": row["sku"],
             "NAME": row["name"],
+            "LOCATION": row["location"],
             "ORDER_QUANTITY": row["order_quantity"],
             "LOW": self._bool_to_python(row["low"]),
             "TRACKING_MODE": row["tracking_mode"],
@@ -376,6 +443,191 @@ class SpreadsheetManager:
 
             return str(row["sku"])
         
+    def _normalize_location(self, value: Any) -> str | None:
+        """Blank clears the location, and anything the catalogue knows is folded
+        onto the canonical spelling of it.
+
+        Locations are typed by hand at the kiosk, so "shelf 5a", "5A" and
+        "Shelf 5A (Archive)" are one shelf and must not become three rows in
+        get_locations. A location the catalogue has never heard of is still
+        allowed -- the shop rearranges itself faster than the catalogue does --
+        and then falls back to reusing a spelling already in use, so an ad-hoc
+        location does not fork on capitalisation either.
+        """
+        if value is None:
+            return None
+
+        location = locations.clean(value)
+
+        if not location:
+            return None
+
+        canonical = locations.resolve(location)
+
+        if canonical is not None:
+            return canonical
+
+        with self.lock:
+            row = self.connection.execute(
+                """
+                SELECT location
+                FROM items
+                WHERE location = ? COLLATE NOCASE
+                LIMIT 1
+                """,
+                (location,),
+            ).fetchone()
+
+        if row is None:
+            return location
+
+        return str(row["location"])
+
+    def _location_counts(self) -> dict[str, int]:
+        """How many items are in each location, keyed by canonical name.
+
+        Resolved rather than taken from the column, so a row written before the
+        catalogue existed still counts towards the shelf it names.
+        """
+        with self.lock:
+            rows = self.connection.execute(
+                """
+                SELECT location, COUNT(*) AS count
+                FROM items
+                WHERE location IS NOT NULL
+                AND TRIM(location) != ''
+                GROUP BY location COLLATE NOCASE
+                """
+            ).fetchall()
+
+        counts: dict[str, int] = {}
+
+        for row in rows:
+            name = locations.resolve(row["location"]) or locations.clean(row["location"])
+            counts[name] = counts.get(name, 0) + row["count"]
+
+        return counts
+
+    def get_locations(self) -> list[dict[str, Any]]:
+        """Every location, grouped under its top level name.
+
+        Known locations are listed even when nothing is in them yet, because
+        the point of predefining a shelf is that someone can put the first
+        thing on it. Grouped rather than flat because a row per sub-group is
+        more rows than a Discord embed can hold, and because what someone
+        wants from this is the shape of the shop rather than a list.
+        """
+        counts = self._location_counts()
+
+        ordered = list(locations.KNOWN_LOCATIONS)
+        ordered += sorted(
+            (name for name in counts if name not in locations.NAMES_FOR),
+            key=str.casefold,
+        )
+
+        totals: dict[str, int] = {}
+        groups: dict[str, list[str]] = {}
+
+        for name in ordered:
+            top, _, group = name.partition(locations.SEPARATOR)
+            count = counts.get(name, 0)
+
+            totals[top] = totals.get(top, 0) + count
+            groups.setdefault(top, [])
+
+            if group:
+                groups[top].append(f"{group} ({count})")
+
+        return [
+            {
+                "LOCATION": top,
+                "COUNT": totals[top],
+                "SUB_GROUPS": ", ".join(groups[top]) or None,
+            }
+            for top in groups
+        ]
+
+    def suggest_locations(self, query: str = "", limit: int = 25) -> list[dict[str, Any]]:
+        """Flat completions for the bot and the kiosk, aliases included.
+
+        The counterpart to suggest_items: get_locations is for reading, this is
+        for picking one. Known locations come first even when empty, since
+        offering only the shelves already in use is how a new shelf never gets
+        used.
+        """
+        counts = self._location_counts()
+        results = []
+
+        for canonical, matched in locations.search(query):
+            results.append(
+                {
+                    "LOCATION": canonical,
+                    "ALIAS": matched,
+                    "COUNT": counts.get(canonical, 0),
+                }
+            )
+
+        wanted = locations.clean(query).casefold()
+
+        for name in sorted(counts, key=str.casefold):
+            if name in locations.NAMES_FOR:
+                continue
+
+            if wanted and wanted not in name.casefold():
+                continue
+
+            results.append({"LOCATION": name, "ALIAS": None, "COUNT": counts[name]})
+
+        return results[:limit]
+
+    def get_items_by_location(self, location_query: str) -> list[dict[str, Any]]:
+        """Everything in a location, including everything in its sub-groups.
+
+        Asking for Shelf 4B means the whole shelf: the things filed into a bin
+        on it and the things only ever recorded as being on it somewhere.
+        """
+        query = locations.clean(location_query)
+
+        if not query:
+            return []
+
+        target = locations.resolve(query) or query
+
+        with self.lock:
+            rows = self.connection.execute(
+                """
+                SELECT sku, name, location, order_quantity, low, tracking_mode, quantity_on_hand, low_threshold, unit, decrease_amount, low_thread_id, digikey_part_number, tags, notes
+                FROM items
+                WHERE location = ? COLLATE NOCASE
+                OR location LIKE ? ESCAPE '\\'
+                ORDER BY location COLLATE NOCASE, name COLLATE NOCASE
+                """,
+                (target, _like_prefix(target)),
+            ).fetchall()
+
+            return [self._row_to_dict(row) for row in rows]
+
+    def set_location(self, sku: str, location: Any) -> bool:
+        """False when there is no such item. An empty location clears it."""
+        with self.lock:
+            if not self.validate_sku(sku):
+                return False
+
+            self.connection.execute(
+                """
+                UPDATE items
+                SET location = ?
+                WHERE sku = ?
+                """,
+                (
+                    self._normalize_location(location),
+                    sku,
+                ),
+            )
+
+            self.connection.commit()
+            return True
+
     def _split_tags(self, value: Any) -> list[str]:
         if value is None:
             return []
@@ -426,6 +678,7 @@ class SpreadsheetManager:
                 SELECT
                     sku,
                     name,
+                    location,
                     order_quantity,
                     low,
                     tracking_mode,
@@ -476,7 +729,7 @@ class SpreadsheetManager:
         with self.lock:
             rows = self.connection.execute(
                 """
-                SELECT sku, name, order_quantity, low, tracking_mode, quantity_on_hand, low_threshold, unit, decrease_amount, low_thread_id, digikey_part_number, tags, notes
+                SELECT sku, name, location, order_quantity, low, tracking_mode, quantity_on_hand, low_threshold, unit, decrease_amount, low_thread_id, digikey_part_number, tags, notes
                 FROM items
                 ORDER BY sku
                 """
@@ -500,7 +753,7 @@ class SpreadsheetManager:
         with self.lock:
             row = self.connection.execute(
                 """
-                SELECT sku, name, order_quantity, low, tracking_mode, quantity_on_hand, low_threshold, unit, decrease_amount, low_thread_id, digikey_part_number, tags, notes
+                SELECT sku, name, location, order_quantity, low, tracking_mode, quantity_on_hand, low_threshold, unit, decrease_amount, low_thread_id, digikey_part_number, tags, notes
                 FROM items
                 WHERE sku = ?
                 """,
@@ -534,6 +787,7 @@ class SpreadsheetManager:
             )
 
             digikey_part_number = item_data.get("DIGIKEY_PART_NUMBER")
+            location = self._normalize_location(item_data.get("LOCATION"))
             tags = item_data.get("TAGS")
             notes = item_data.get("NOTES")
 
@@ -551,12 +805,13 @@ class SpreadsheetManager:
                     quantity_on_hand,
                     low_threshold,
                     unit,
-                    decrease_amount, 
+                    decrease_amount,
                     digikey_part_number,
+                    location,
                     tags,
                     notes
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     new_sku,
@@ -569,6 +824,7 @@ class SpreadsheetManager:
                     unit,
                     decrease_amount,
                     digikey_part_number,
+                    location,
                     tags,
                     notes
                 ),
@@ -615,7 +871,7 @@ class SpreadsheetManager:
                 if header not in self.default_headers:
                     raise ValueError(f"Header '{header}' does not exist.")
 
-                if header in {"NAME", "ORDER_QUANTITY", "LOW", "TRACKING_MODE", "QUANTITY_ON_HAND", "LOW_THRESHOLD", "UNIT", "DECREASE_AMOUNT", "LOW_THREAD_ID", "DIGIKEY_PART_NUMBER", "TAGS", "NOTES"}:
+                if header in {"NAME", "ORDER_QUANTITY", "LOW", "TRACKING_MODE", "QUANTITY_ON_HAND", "LOW_THRESHOLD", "UNIT", "DECREASE_AMOUNT", "LOW_THREAD_ID", "DIGIKEY_PART_NUMBER", "LOCATION", "TAGS", "NOTES"}:
                     item_updates[header] = value
                     continue
 
@@ -640,6 +896,7 @@ class SpreadsheetManager:
                     "DECREASE_AMOUNT": "decrease_amount",
                     "LOW_THREAD_ID": "low_thread_id",
                     "DIGIKEY_PART_NUMBER": "digikey_part_number",
+                    "LOCATION": "location",
                     "TAGS": "tags",
                     "NOTES": "notes",
                 }
@@ -656,6 +913,8 @@ class SpreadsheetManager:
                         values.append(self._normalize_bool(value))
                     elif header == "TRACKING_MODE":
                         values.append(self._normalize_tracking_mode(value))
+                    elif header == "LOCATION":
+                        values.append(self._normalize_location(value))
                     elif header in {
                         "QUANTITY_ON_HAND",
                         "LOW_THRESHOLD",
@@ -765,6 +1024,7 @@ class SpreadsheetManager:
                 SELECT
                     sku,
                     name,
+                    location,
                     order_quantity,
                     low,
                     tracking_mode,
@@ -1024,7 +1284,7 @@ class SpreadsheetManager:
         with self.lock:
             rows = self.connection.execute(
                 """
-                SELECT sku, name, order_quantity, low, tracking_mode, quantity_on_hand, low_threshold, unit, decrease_amount, low_thread_id, digikey_part_number, tags, notes
+                SELECT sku, name, location, order_quantity, low, tracking_mode, quantity_on_hand, low_threshold, unit, decrease_amount, low_thread_id, digikey_part_number, tags, notes
                 FROM items
                 """
             ).fetchall()
@@ -1072,6 +1332,11 @@ class SpreadsheetManager:
                 score += 250.0
 
             if query_folded in {tag.casefold() for tag in self._split_tags(row["tags"])}:
+                score += 200.0
+
+            # Typing a shelf name is asking what is on that shelf, so the items
+            # actually on it come before the ones that only mention it
+            if query_folded == str(row["location"] or "").casefold():
                 score += 200.0
 
             scored.append((-score, name_folded, row))

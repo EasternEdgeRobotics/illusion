@@ -244,6 +244,36 @@ async def tag_autocomplete(interaction: discord.Interaction, current: str):
     return choices
 
 
+async def location_autocomplete(interaction: discord.Interaction, current: str):
+    """Suggest locations, so a shelf only ever ends up with one name.
+
+    Matching happens in claws, against the nicknames as well as the names, so
+    "mastercraft" finds Tool Chest 3 and "4b" finds Shelf 4B. The alias is
+    shown alongside what it resolves to rather than instead of it: picking a
+    nickname should not be a surprise about what gets stored.
+    """
+    try:
+        locations = await claws.suggest_locations(current, limit=AUTOCOMPLETE_LIMIT)
+    except ServiceUnavailable:
+        return []
+
+    choices = []
+
+    for location in locations:
+        name = location["LOCATION"]
+        label = f"{name} ({location['COUNT']})"
+
+        if location["ALIAS"]:
+            label = f"{location['ALIAS']} -> {label}"
+
+        if len(label) > CHOICE_LABEL_LIMIT:
+            label = f"{label[:CHOICE_LABEL_LIMIT - 1]}…"
+
+        choices.append(app_commands.Choice(name=label, value=name))
+
+    return choices
+
+
 @bot.tree.command(name="ping", description="Check bot latency")
 async def ping(interaction: discord.Interaction):
     latency = round(bot.latency * 1000)
@@ -359,14 +389,17 @@ async def delete(interaction: discord.Interaction, sku: str):
                        vendor_3="Source 3 for Item", link_3="Source 3 Purchase Link",
                        vendor_4="Source 4 for Item", link_4="Source 4 Purchase Link",
                        vendor_5="Source 5 for Item", link_5="Source 5 Purchase Link",
+                       location="Where the item lives, ex: Shelf 5A",
                        tags="Comma-separated tags", notes="Notes about this item",
                        )
+@app_commands.autocomplete(location=location_autocomplete)
 
 async def add_item(interaction: discord.Interaction, item_name: str,
                    quantity: float, order_quantity: float, low_threshold: float, unit: str,
+                   location: str | None = None,
                    digikey_part_number: str | None = None, tags: str | None = None, notes: str | None = None,
-                   vendor_1: str | None = None, link_1: str | None = None, vendor_2: str | None = None, link_2: str | None = None, 
-                   vendor_3: str | None = None, link_3: str | None = None, vendor_4: str | None = None, 
+                   vendor_1: str | None = None, link_1: str | None = None, vendor_2: str | None = None, link_2: str | None = None,
+                   vendor_3: str | None = None, link_3: str | None = None, vendor_4: str | None = None,
                    link_4: str | None = None, vendor_5: str | None = None, link_5: str | None = None):
 
     if tags == None:
@@ -375,7 +408,7 @@ async def add_item(interaction: discord.Interaction, item_name: str,
         tags = f"per_item_tracking, {tags}"
 
     response_message = await command_handler.handler_add_item(item_name, order_quantity, "QUANTITY", quantity, low_threshold, unit, "1", vendor_1, link_1,
-                                                              vendor_2, link_2, vendor_3, link_3, vendor_4, link_4, vendor_5, link_5, digikey_part_number, tags, notes,)
+                                                              vendor_2, link_2, vendor_3, link_3, vendor_4, link_4, vendor_5, link_5, digikey_part_number, tags, notes, location,)
 
     await interaction.response.send_message(response_message)
 
@@ -387,13 +420,16 @@ async def add_item(interaction: discord.Interaction, item_name: str,
                        vendor_3="Source 3 for Item", link_3="Source 3 Purchase Link",
                        vendor_4="Source 4 for Item", link_4="Source 4 Purchase Link",
                        vendor_5="Source 5 for Item", link_5="Source 5 Purchase Link",
+                       location="Where the item lives, ex: Shelf 5A",
                        tags="Comma-separated tags", notes="Notes about this item",
                        )
+@app_commands.autocomplete(location=location_autocomplete)
 
 async def add_kanban(interaction: discord.Interaction, item_name: str, order_quantity: float,
+                     location: str | None = None,
                      digikey_part_number: str | None = None, tags: str | None = None, notes: str | None = None,
-                   vendor_1: str | None = None, link_1: str | None = None, vendor_2: str | None = None, link_2: str | None = None, 
-                   vendor_3: str | None = None, link_3: str | None = None, vendor_4: str | None = None, 
+                   vendor_1: str | None = None, link_1: str | None = None, vendor_2: str | None = None, link_2: str | None = None,
+                   vendor_3: str | None = None, link_3: str | None = None, vendor_4: str | None = None,
                    link_4: str | None = None, vendor_5: str | None = None, link_5: str | None = None):
 
     if tags == None:
@@ -402,7 +438,7 @@ async def add_kanban(interaction: discord.Interaction, item_name: str, order_qua
         tags = f"kanban_tracking, {tags}"
 
     response_message = await command_handler.handler_add_item(item_name, order_quantity, "KANBAN", None, None, None, None, vendor_1, link_1,
-                                                              vendor_2, link_2, vendor_3, link_3, vendor_4, link_4, vendor_5, link_5, digikey_part_number, tags, notes,)
+                                                              vendor_2, link_2, vendor_3, link_3, vendor_4, link_4, vendor_5, link_5, digikey_part_number, tags, notes, location,)
 
     await interaction.response.send_message(response_message)
 
@@ -415,11 +451,14 @@ async def add_kanban(interaction: discord.Interaction, item_name: str, order_qua
                        vendor_3="Source 3 for Item", link_3="Source 3 Purchase Link",
                        vendor_4="Source 4 for Item", link_4="Source 4 Purchase Link",
                        vendor_5="Source 5 for Item", link_5="Source 5 Purchase Link",
+                       location="Where the item lives, ex: Shelf 5A",
                        tags="Comma-separated tags", notes="Notes about this item",
                        )
+@app_commands.autocomplete(location=location_autocomplete)
 
 async def add_hybrid(interaction: discord.Interaction, item_name: str,
                    quantity: float, order_quantity: float, low_threshold: float, unit: str, decrease_amount: float,
+                   location: str | None = None,
                    digikey_part_number: str | None = None, tags: str | None = None, notes: str | None = None,
                    vendor_1: str | None = None, link_1: str | None = None, vendor_2: str | None = None, link_2: str | None = None, 
                    vendor_3: str | None = None, link_3: str | None = None, vendor_4: str | None = None, 
@@ -432,7 +471,7 @@ async def add_hybrid(interaction: discord.Interaction, item_name: str,
 
     response_message = await command_handler.handler_add_item(item_name, order_quantity, "HYBRID",
                                                               quantity, low_threshold, unit, decrease_amount, vendor_1, link_1,
-                                                              vendor_2, link_2, vendor_3, link_3, vendor_4, link_4, vendor_5, link_5, digikey_part_number, tags, notes,)
+                                                              vendor_2, link_2, vendor_3, link_3, vendor_4, link_4, vendor_5, link_5, digikey_part_number, tags, notes, location,)
 
     await interaction.response.send_message(response_message)
 
@@ -440,12 +479,15 @@ async def add_hybrid(interaction: discord.Interaction, item_name: str,
 @app_commands.describe(item_name="Item Name",
                        order_quantity="Number of units to order when stock low",
                        unit="Unit name", digikey_part_number="Digikey Part Number",
-                       quantity="Number of units on hand", low_threshold="Minimum Stock", 
+                       quantity="Number of units on hand", low_threshold="Minimum Stock",
+                       location="Where the item lives, ex: Shelf 5A",
                        tags="Comma-separated tags", notes="Notes about this item",
                        )
+@app_commands.autocomplete(location=location_autocomplete)
 
 async def add_with_dkpn(interaction: discord.Interaction, digikey_part_number: str,
-                   quantity: float, order_quantity: float, low_threshold: float, unit: str, item_name: str | None = None, tags: str | None = None, notes: str | None = None):
+                   quantity: float, order_quantity: float, low_threshold: float, unit: str, item_name: str | None = None,
+                   location: str | None = None, tags: str | None = None, notes: str | None = None):
 
     await interaction.response.defer()
 
@@ -465,7 +507,7 @@ async def add_with_dkpn(interaction: discord.Interaction, digikey_part_number: s
 
     response_message = await command_handler.handler_add_item(item_name, order_quantity, "HYBRID",
                                                               quantity, low_threshold, unit, 1, None, None,
-                                                              None, None, None, None, None, None, None, None, digikey_part_number, tags, notes,)
+                                                              None, None, None, None, None, None, None, None, digikey_part_number, tags, notes, location,)
 
     await interaction.followup.send(response_message)
 
@@ -497,6 +539,27 @@ async def get_tags(interaction: discord.Interaction):
 @app_commands.autocomplete(sku=sku_autocomplete, tag=tag_autocomplete)
 async def add_tag(interaction: discord.Interaction, sku: str, tag: str):
     response_message = await command_handler.handler_add_tag(sku, tag)
+    await interaction.response.send_message(response_message)
+
+@bot.tree.command(name="get_locations", description="List every location in use")
+async def get_locations(interaction: discord.Interaction):
+    await interaction.response.defer()
+
+    await send_result(interaction, await command_handler.handler_get_locations())
+
+@bot.tree.command(name="search_location", description="List the items in a location")
+@app_commands.describe(location="Location to search for")
+@app_commands.autocomplete(location=location_autocomplete)
+async def search_location(interaction: discord.Interaction, location: str):
+    await interaction.response.defer()
+
+    await send_result(interaction, await command_handler.handler_search_location(location))
+
+@bot.tree.command(name="set_location", description="Set where an item lives, or clear it")
+@app_commands.describe(sku="Item SKU", location="Where the item lives, leave empty to clear it")
+@app_commands.autocomplete(sku=sku_autocomplete, location=location_autocomplete)
+async def set_location(interaction: discord.Interaction, sku: str, location: str | None = None):
+    response_message = await command_handler.handler_set_location(sku, location)
     await interaction.response.send_message(response_message)
 
 @bot.tree.command(name="generate_barcode", description="Generate a barcode")
@@ -848,11 +911,13 @@ async def printer_info(interaction: discord.Interaction):
                        vendor_3="Source 3 for Item", link_3="Source 3 Purchase Link",
                        vendor_4="Source 4 for Item", link_4="Source 4 Purchase Link",
                        vendor_5="Source 5 for Item", link_5="Source 5 Purchase Link",
+                       location="Where the item lives, ex: Shelf 5A",
                        tags="Comma-separated tags", notes="Notes about this item",
                        )
-@app_commands.autocomplete(sku=sku_autocomplete)
+@app_commands.autocomplete(sku=sku_autocomplete, location=location_autocomplete)
 async def update_item(interaction: discord.Interaction, sku: str,
-                      item_name: str | None = None, quantity: str | None = None, order_quantity: str | None = None,
+                      item_name: str | None = None, location: str | None = None,
+                      quantity: str | None = None, order_quantity: str | None = None,
                       low_threshold: str | None = None, unit: str | None = None, decrease_amount: str | None = None, 
                       digikey_part_number: str | None = None, tags: str | None = None, notes: str | None = None,
                       vendor_1: str | None = None, link_1: str | None = None, vendor_2: str | None = None, link_2: str | None = None, 
@@ -880,6 +945,7 @@ async def update_item(interaction: discord.Interaction, sku: str,
             "VENDOR_5": vendor_5,
             "LOW": None,
             "DIGIKEY_PART_NUMBER": digikey_part_number,
+            "LOCATION": location,
             "NOTES": notes,
             "TAGS": tags,
         }

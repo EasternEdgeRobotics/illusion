@@ -52,8 +52,8 @@ class DB_Commands:
     async def handler_add_item(self, item_name, order_quantity, tracking_mode="KANBAN", quantity_on_hand=None,
                                low_threshold=None, unit=None, decrease_amount=None, vendor_1 = None, link_1 = None, 
                                vendor_2 = None, link_2 = None, vendor_3 = None, link_3 = None, 
-                               vendor_4 = None, link_4 = None, vendor_5 = None, link_5 = None, 
-                               digikey_part_number = None, tags = None, notes = None,): 
+                               vendor_4 = None, link_4 = None, vendor_5 = None, link_5 = None,
+                               digikey_part_number = None, tags = None, notes = None, location = None,):
         # Digikey part numbers are unique, so we need to make sure that there isnt an existing item with the sane dkpn
         if digikey_part_number != None:
             digikey_test = await self.claws.item_by_dkpn(digikey_part_number)
@@ -81,10 +81,11 @@ class DB_Commands:
             "VENDOR_5": vendor_5,
             "LOW": "FALSE",
             "DIGIKEY_PART_NUMBER": digikey_part_number,
+            "LOCATION": location,
             "TAGS": tags,
             "NOTES": notes,
         }
-        
+
         created = await self.claws.add_item(new_item)
 
         if created.get("rejected"):
@@ -403,6 +404,7 @@ class DB_Commands:
             "VENDOR_1": "DigiKey",
             "LINK_1": f"https://www.digikey.ca/en/products/result?keywords={dkpn}",
             "LOW": "FALSE",
+            "LOCATION": None,
             "TAGS": "per_item_tracking, digikey_scan, digikey",
             "NOTES": None,
         }
@@ -477,6 +479,73 @@ class DB_Commands:
         await self.claws.add_tag(sku, tag)
 
         return f"Added tag `{tag}` to {sku}"
+
+    @reports_service_errors
+    async def handler_get_locations(self):
+        locations = await self.claws.locations()
+
+        if not locations:
+            return "No locations found."
+
+        return Rows(locations)
+
+    @reports_service_errors
+    async def handler_search_location(self, location):
+        results = await self.claws.items_by_location(location)
+
+        if not results:
+            return f"No items found in: {location}"
+
+        exclude = [
+            "LINK_1",
+            "VENDOR_1",
+            "LINK_2",
+            "VENDOR_2",
+            "LINK_3",
+            "VENDOR_3",
+            "LINK_4",
+            "VENDOR_4",
+            "LINK_5",
+            "VENDOR_5",
+            "LOW_THREAD_ID",
+            "TRACKING_MODE",
+            "LOW_THRESHOLD",
+            "UNIT",
+            "DECREASE_AMOUNT",
+            "ORDER_QUANTITY",
+            "LOW",
+            "NOTES",
+        ]
+
+        return Rows(results, exclude)
+
+    @reports_service_errors
+    async def handler_set_location(self, sku: str, location: str | None = None):
+        """An empty location clears it, which is how an item comes off a shelf."""
+        sku = illusion_helpers.clean_sku(sku)
+        location = (location or "").strip()
+
+        result = await self.claws.set_location(sku, location or None)
+
+        if result is None:
+            return f"Invalid sku: {sku}"
+
+        item = result["item"]
+
+        if not item["LOCATION"]:
+            return f"Cleared the location of {sku}"
+
+        # The stored spelling, not the typed one: claws folds what was typed
+        # onto the catalogue, so this is where someone finds out that "5a" went
+        # in as "Shelf 5A (Archive)"
+        response_message = f"{sku} is in {item['LOCATION']}"
+
+        # Allowed, but worth saying out loud, because at that point it is as
+        # likely to be a typo as a shelf nobody has told the catalogue about
+        if not result["known"]:
+            response_message += "\nThat is not one of the known locations."
+
+        return response_message
 
     async def handler_uptime(self):
         """Both as human readable durations, computed on this machine's clock."""

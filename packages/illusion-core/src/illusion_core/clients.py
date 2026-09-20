@@ -8,6 +8,7 @@ risk double counting.
 """
 
 import json
+from urllib.parse import quote
 
 import httpx
 
@@ -216,6 +217,13 @@ class ClawsClient(BaseClient):
     async def add_tag(self, sku, tag):
         return await self.or_none("POST", f"/items/{sku}/tags", json={"tag": tag})
 
+    async def set_location(self, sku, location):
+        """The updated item and whether its location is a known one, or None
+        when there is no such sku."""
+        return await self.or_none(
+            "PUT", f"/items/{sku}/location", json={"location": location}
+        )
+
     async def add_vendor(self, sku, vendor_name, link):
         return (await self.post(
             f"/items/{sku}/vendors", json={"vendor_name": vendor_name, "link": link}
@@ -232,6 +240,20 @@ class ClawsClient(BaseClient):
 
     async def items_by_tag(self, tag):
         return await self.get(f"/tags/{tag}/items")
+
+    async def locations(self):
+        return await self.get("/locations")
+
+    async def suggest_locations(self, query="", limit=25):
+        return await self.get(
+            "/locations/suggest", params={"query": query, "limit": limit}
+        )
+
+    async def items_by_location(self, location):
+        # Locations are free text off a shelf label, so "Bin Wall / bin array"
+        # is a perfectly ordinary one and its slash cannot be left to split the
+        # path into segments that match nothing
+        return await self.get(f"/locations/{quote(str(location), safe='')}/items")
 
     async def status(self):
         """The whole fleet: claws plus every service it probes."""
