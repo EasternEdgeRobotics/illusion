@@ -31,6 +31,24 @@ class ServiceUnavailable(Exception):
         self.service = service
 
 
+def error_detail(response):
+    """The service's own explanation, rather than the JSON envelope around it.
+
+    FastAPI wraps a rejection in {"detail": ...}, and these messages are read by
+    people in Discord: a preview refused for a missing line should say so, not
+    quote JSON at them.
+    """
+    try:
+        body = response.json()
+    except ValueError:
+        return response.text[:200]
+
+    if isinstance(body, dict) and "detail" in body:
+        return str(body["detail"])[:200]
+
+    return response.text[:200]
+
+
 class BaseClient:
     def __init__(self, url, token, name):
         self._url = url.rstrip("/")
@@ -57,7 +75,7 @@ class BaseClient:
 
             if response.status_code >= 400:
                 raise ServiceUnavailable(
-                    f"{self._name} returned {response.status_code}: {response.text[:200]}",
+                    f"{self._name} returned {response.status_code}: {error_detail(response)}",
                     status_code=response.status_code,
                     service=self._name,
                 )
@@ -145,6 +163,20 @@ class LipglossClient(BaseClient):
             },
         )
 
+    async def preview(self, style, sku=None, line_1=None, line_2=None, scale=3):
+        """PNG bytes of the label print_label would produce, same geometry and all.
+
+        Separate from render() on purpose: render takes whatever size it is
+        given, while this one is answered at the printer's own label size, which
+        is the only thing worth showing someone before they commit a roll to it.
+        """
+        response = await self._request("POST", "/preview", json={
+            "style": style, "sku": sku, "line_1": line_1, "line_2": line_2,
+            "scale": scale,
+        })
+
+        return response.content
+
     async def render(self, style="classic_barcode", sku=None, line_1=None,
                      line_2=None, width=350, height=280, rotate=0):
         """Returns PNG bytes."""
@@ -168,7 +200,9 @@ class LipglossClient(BaseClient):
         return (await self.post("/queue/clear"))["message"]
 
     async def cancel(self, job_id):
-        return (await self.delete(f"/queue/{job_id}"))["message"]
+        """{"cancelled": bool, "message": str}, since a job already printed is
+        not the same answer as one pulled out of the queue."""
+        return await self.delete(f"/queue/{job_id}")
 
 
 class ClawsClient(BaseClient):

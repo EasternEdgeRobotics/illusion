@@ -7,7 +7,36 @@ from barcode import Code128
 from barcode.writer import ImageWriter
 import qrcode
 from qrcode.constants import ERROR_CORRECT_L
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont, ImageOps
+
+# A label is white on white against a Discord message, so the preview gets a
+# frame to show where its edges actually are
+PREVIEW_BORDER_COLOUR = "#999999"
+PREVIEW_MAX_SCALE = 8
+
+
+def preview_png(path, scale=3) -> bytes:
+    """A rendered label blown up for a screen, framed, as PNG bytes.
+
+    Nearest neighbour on purpose: the point of a preview is to show the pixels
+    the printer is going to get, and a smooth resample would flatter a barcode
+    that is really too fine to scan.
+    """
+    scale = max(1, min(int(scale), PREVIEW_MAX_SCALE))
+
+    with Image.open(path) as label:
+        scaled = label.convert("RGB").resize(
+            (label.width * scale, label.height * scale),
+            Image.Resampling.NEAREST,
+        )
+
+    framed = ImageOps.expand(scaled, border=1, fill=PREVIEW_BORDER_COLOUR)
+
+    buffer = BytesIO()
+    framed.save(buffer, format="PNG")
+
+    return buffer.getvalue()
+
 
 LABEL_STYLES = {
     "slim_barcode": {
@@ -107,7 +136,35 @@ LABEL_STYLES = {
     },
 }
 
-class LabelMaker:    
+# Wire names for the values a style pulls in, so a rejection can name the field
+# the caller actually sent rather than the one the grid calls it
+STYLE_FIELD_NAMES = {
+    "sku": "sku",
+    "input_text_1": "line_1",
+    "input_text_2": "line_2",
+}
+
+
+def missing_values(style_name, values):
+    """The fields a style needs that came in empty, named as the caller sent them.
+
+    Without this a style whose text is missing dies inside PIL with a TypeError
+    about NoneType, which reaches the user as a 500 from a service that is
+    perfectly healthy.
+    """
+    missing = []
+
+    for cell in LABEL_STYLES[style_name]["cells"]:
+        key = cell["value"]
+        name = STYLE_FIELD_NAMES.get(key, key)
+
+        if not values.get(key) and name not in missing:
+            missing.append(name)
+
+    return missing
+
+
+class LabelMaker:
     def __init__(self, font):
         self._font = font
         self._min_font_size = 6

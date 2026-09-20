@@ -11,6 +11,7 @@ missed.
 
 import asyncio
 import collections
+import dataclasses
 import io
 import os
 import signal
@@ -755,8 +756,235 @@ async def lipgloss_event_loop():
 
         await asyncio.sleep(5)
 
+# How long the buttons under a print stay live. Long enough to walk over and
+# look at the printer, short enough that a message left in the scrollback cannot
+# fire a print into an empty room an hour later.
+PRINT_BUTTON_TIMEOUT = 300
+
+# Enough to read a 320x96 label in a Discord message without it filling the
+# channel
+PREVIEW_SCALE = 3
+
+
+@dataclasses.dataclass
+class LabelPrint:
+    """A print the command has finished working out.
+
+    Held onto so a button pressed minutes later still runs exactly the job that
+    was previewed, rather than reassembling it from the message it is attached
+    to.
+    """
+
+    style: str
+    sku: str | None = None
+    line_1: str | None = None
+    line_2: str | None = None
+    quantity: int = 1
+
+    def embed(self, title, description, urgent=False, has_image=True):
+        return presentation.label_embed(
+            title=title,
+            description=description,
+            style=self.style,
+            sku=self.sku,
+            line_1=self.line_1,
+            line_2=self.line_2,
+            copies=self.quantity,
+            urgent=urgent,
+            has_image=has_image,
+        )
+
+
+def label_message(embed, view=None, preview_bytes=None):
+    """Send kwargs for a message about a label, leaving out what it has not got.
+
+    discord.py wants absent rather than None for both of these, and the preview
+    is optional in two different ways: the image may have failed to render, and
+    a finished print has nothing left to cancel.
+    """
+    kwargs = {"embed": embed}
+
+    if preview_bytes is not None:
+        kwargs["file"] = presentation.label_file(preview_bytes)
+
+    if view is not None:
+        kwargs["view"] = view
+
+    return kwargs
+
+
+async def run_print(interaction, job, preview_bytes):
+    """Queue the job, and describe it with a way out while there still is one.
+
+    Returns the embed and the view to put under it. The cancel button is only
+    offered when lipgloss actually took the job: there is nothing to cancel when
+    it refused it.
+    """
+    try:
+        result = await command_handler.handler_print_job(
+            style=job.style,
+            sku=job.sku,
+            text_line_1=job.line_1,
+            text_line_2=job.line_2,
+            quantity=job.quantity,
+            reply_to=make_notifier(interaction),
+            source=f"discord/{interaction.user.display_name}",
+        )
+    except ServiceUnavailable as e:
+        return job.embed(
+            title="Print Failed",
+            description=f"Unable to reach the print server.\n{e}",
+            urgent=True,
+            has_image=preview_bytes is not None,
+        ), None
+
+    job_id = result.get("job_id")
+    paused = result.get("paused")
+
+    if job_id is None:
+        title = "Not Printed"
+    elif paused:
+        title = "Print Queue Paused"
+    else:
+        title = "Printing"
+
+    embed = job.embed(
+        title=title,
+        description=result["message"],
+        urgent=job_id is None or bool(paused),
+        has_image=preview_bytes is not None,
+    )
+
+    if job_id is None:
+        return embed, None
+
+    return embed, CancelPrint(job, job_id, has_image=preview_bytes is not None)
+
+
+class ConfirmPrint(discord.ui.View):
+    """The preview step: the label is on screen and nothing has printed yet."""
+
+    def __init__(self, requester, job, preview_bytes):
+        super().__init__(timeout=PRINT_BUTTON_TIMEOUT)
+
+        self.requester = requester
+        self.job = job
+        self.preview_bytes = preview_bytes
+        self.message = None
+
+    async def interaction_check(self, interaction: discord.Interaction):
+        # A preview sitting in a busy channel is not somebody else's to commit
+        # to a roll of labels
+        if interaction.user.id == self.requester.id:
+            return True
+
+        await interaction.response.send_message(
+            "That preview is someone else's, run /print to get your own.", ephemeral=True
+        )
+
+        return False
+
+    async def on_timeout(self):
+        # Buttons that quietly stop working are worse than no buttons, so say
+        # what happened to them
+        if self.message is None:
+            return
+
+        embed = self.job.embed(
+            title="Label Preview",
+            description="This preview expired, nothing was printed.",
+        )
+
+        try:
+            await self.message.edit(embed=embed, view=None)
+        except discord.HTTPException:
+            # Deleted, or the channel went away. An expired preview is not worth
+            # taking a background task down over
+            pass
+
+    @discord.ui.button(label="Print", style=discord.ButtonStyle.success)
+    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.stop()
+
+        # Printing is a round trip to another machine, so get off Discord's
+        # three second clock before making it
+        await interaction.response.defer()
+
+        embed, view = await run_print(interaction, self.job, self.preview_bytes)
+
+        # view is passed even when it is None, which is what takes the preview's
+        # own buttons off the message: leaving it out would keep them there,
+        # doing nothing
+        message = await interaction.edit_original_response(embed=embed, view=view)
+
+        if view is not None:
+            view.message = message
+
+    @discord.ui.button(label="Discard", style=discord.ButtonStyle.secondary,)
+    async def discard(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.stop()
+
+        embed = self.job.embed(
+            title="Label Preview", description="Discarded, nothing was printed."
+        )
+
+        await interaction.response.edit_message(embed=embed, view=None)
+
+
+class CancelPrint(discord.ui.View):
+    """A one press /print_cancel for the job this message is about.
+
+    Deliberately not locked to whoever printed it: the same job is already
+    cancellable by anyone through /print_cancel, and whoever is standing at the
+    printer watching it chew through the wrong label is usually not the person
+    who sent it.
+    """
+
+    def __init__(self, job, job_id, has_image=True):
+        super().__init__(timeout=PRINT_BUTTON_TIMEOUT)
+
+        self.job = job
+        self.job_id = job_id
+        self.has_image = has_image
+        self.message = None
+
+    async def on_timeout(self):
+        if self.message is None:
+            return
+
+        try:
+            await self.message.edit(view=None)
+        except discord.HTTPException:
+            pass
+
+    @discord.ui.button(label="Cancel Job", style=discord.ButtonStyle.danger, emoji="✖️")
+    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer()
+
+        try:
+            result = await command_handler.handler_print_cancel_job(self.job_id)
+        except ServiceUnavailable as e:
+            # The button stays live: the printer is the thing that is broken,
+            # and the job may well still be sat in the queue
+            await interaction.followup.send(
+                f"Unable to reach the print server.\n{e}", ephemeral=True
+            )
+            return
+
+        self.stop()
+
+        embed = self.job.embed(
+            title="Print Cancelled" if result["cancelled"] else "Nothing to Cancel",
+            description=result["message"],
+            urgent=not result["cancelled"],
+            has_image=self.has_image,
+        )
+
+        await interaction.edit_original_response(embed=embed, view=None)
+
+
 @bot.tree.command(name="print", description="Print a label")
-@app_commands.describe(style="Label style", text_line_1="Text Line 1", text_line_2="Text Line 2", sku="Item Sku", get_text_from_sku="Get the item name from the provided sku", quantity="Number of copies to print",)
+@app_commands.describe(style="Label style", text_line_1="Text Line 1", text_line_2="Text Line 2", sku="Item Sku", get_text_from_sku="Get the item name from the provided sku", quantity="Number of copies to print", preview="Look at the label and confirm before anything prints",)
 @app_commands.choices(
     style=[
         app_commands.Choice(name="Barcode (Requires sku)", value="slim_barcode"),
@@ -771,7 +999,7 @@ async def lipgloss_event_loop():
 @app_commands.autocomplete(sku=sku_autocomplete)
 async def print_niimbot(interaction: discord.Interaction, style: app_commands.Choice[str], sku: str | None = None,
                         text_line_1: str | None = None, text_line_2: str | None = None, get_text_from_sku: bool = False,
-                        quantity: app_commands.Range[int, 1, MAX_COPIES] = 1,):
+                        quantity: app_commands.Range[int, 1, MAX_COPIES] = 1, preview: bool = False,):
     if not PRINTING_ENABLED:
         await interaction.response.send_message(f"Printer not enabled")
         return
@@ -793,12 +1021,12 @@ async def print_niimbot(interaction: discord.Interaction, style: app_commands.Ch
         text_line_1 = item["NAME"]
 
     # Make sure we have all required values for each style
-    if text_line_1 == None and (style_name == "label" or style_name == "label_barcode" or style_name == "cable_label" or style_name == "cable_label_barcode" or style_name == "label_qr" or style_name == "cable_label_sku"):
+    if text_line_1 == None and (style_name == "label" or style_name == "label_barcode" or style_name == "cable_label" or style_name == "cable_label_qr" or style_name == "label_qr" or style_name == "cable_label_sku"):
         await interaction.response.send_message(f"Style: {style_name} requires text_line_1")
         return
     if text_line_2 == None and (style_name == "cable_label" or style_name == "cable_label_sku"):
         text_line_2 = text_line_1
-    if sku == None and (style_name == "slim_barcode" or style_name == "label_barcode" or style_name == "cable_label_barcode" or style_name == "label_qr" or style_name == "cable_label_sku"):
+    if sku == None and (style_name == "slim_barcode" or style_name == "label_barcode" or style_name == "cable_label_qr" or style_name == "label_qr" or style_name == "cable_label_sku"):
         await interaction.response.send_message(f"Style: {style_name} requires sku")
         return
 
@@ -816,9 +1044,46 @@ async def print_niimbot(interaction: discord.Interaction, style: app_commands.Ch
         else:
             style_name = "label_2_line_qr"
 
-    response_message = await command_handler.handler_print(style=style_name, sku=sku, text_line_1=text_line_1, text_line_2=text_line_2,
-                                                          quantity=quantity, reply_to=make_notifier(interaction), source=f"discord/{interaction.user.display_name}",)
-    await interaction.followup.send(response_message)
+    job = LabelPrint(style=style_name, sku=sku, line_1=text_line_1, line_2=text_line_2, quantity=quantity)
+
+    try:
+        preview_bytes = await command_handler.handler_preview_label(
+            style=job.style, sku=job.sku, text_line_1=job.line_1, text_line_2=job.line_2,
+            scale=PREVIEW_SCALE,
+        )
+    except ServiceUnavailable as e:
+        if preview:
+            # Looking at it first was the whole point of the command, so there
+            # is nothing useful left to do
+            await interaction.followup.send(f"Unable to reach the print server.\n{e}")
+            return
+
+        # Otherwise the picture was only ever a courtesy, and the print itself
+        # reports its own failure well enough
+        preview_bytes = None
+
+    if preview:
+        view = ConfirmPrint(interaction.user, job, preview_bytes)
+
+        view.message = await interaction.followup.send(
+            **label_message(
+                job.embed(
+                    title="Label Preview",
+                    description="Nothing has printed yet.",
+                ),
+                view,
+                preview_bytes,
+            )
+        )
+
+        return
+
+    embed, view = await run_print(interaction, job, preview_bytes)
+
+    message = await interaction.followup.send(**label_message(embed, view, preview_bytes))
+
+    if view is not None:
+        view.message = message
 
 @bot.tree.command(name="print_image", description="Print an image")
 @app_commands.describe(image="Image to print", rotate="Degrees to rotate by", quantity="Number of copies to print")

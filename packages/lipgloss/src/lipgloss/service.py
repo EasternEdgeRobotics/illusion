@@ -13,14 +13,20 @@ from importlib.metadata import version
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, Header, HTTPException, UploadFile, Form
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, Field
 
 from illusion_core import config as illusion_config
 from illusion_core.uptime import service_uptime_ms, system_uptime_ms
 from lipgloss import printer
 from illusion_core.events import EventBus
-from lipgloss.label_maker import LabelMaker, LABEL_STYLES
+from lipgloss.label_maker import (
+    LabelMaker,
+    LABEL_STYLES,
+    PREVIEW_MAX_SCALE,
+    missing_values,
+    preview_png,
+)
 from lipgloss.print_queue import MAX_COPIES, PrintQueue
 from lipgloss.printer import PrinterUnavailable
 
@@ -60,6 +66,16 @@ class RenderRequest(BaseModel):
     width: int = BARCODE_WIDTH
     height: int = BARCODE_HEIGHT
     rotate: int = 0
+
+
+class PreviewRequest(BaseModel):
+    """The print fields, minus everything about actually printing."""
+
+    style: str
+    sku: str | None = None
+    line_1: str | None = None
+    line_2: str | None = None
+    scale: int = Field(default=3, ge=1, le=PREVIEW_MAX_SCALE)
 
 
 def create_app(config_path="./lipgloss.yaml"):
@@ -108,6 +124,37 @@ def create_app(config_path="./lipgloss.yaml"):
         # overwrite one still waiting to be printed
         return str(output_dir / f"{prefix}_{time.time_ns()}")
 
+    def _render_printable(style, sku, line_1, line_2, prefix, rotate=90):
+        """The one place a printable label is rendered.
+
+        /print and /preview both come through here, so a preview cannot quietly
+        drift from what the printer is handed: same style, same geometry, and
+        the only difference is the quarter turn the printer needs and a person
+        reading it does not.
+        """
+        if style not in LABEL_STYLES:
+            raise HTTPException(status_code=400, detail=f"unknown style: {style}")
+
+        missing = missing_values(
+            style, {"sku": sku, "input_text_1": line_1, "input_text_2": line_2}
+        )
+
+        if missing:
+            raise HTTPException(
+                status_code=400, detail=f"{style} needs {', '.join(missing)}"
+            )
+
+        return labelmaker.render_label(
+            style_name=style,
+            input_text_1=line_1,
+            input_text_2=line_2,
+            sku=sku,
+            width=LABEL_WIDTH,
+            height=LABEL_HEIGHT,
+            rotate=rotate,
+            output=_label_path(prefix),
+        )
+
     # Health is deliberately unauthenticated so claws can report liveness even
     # if the shared token is rotated on one side only
     @app.get("/health")
@@ -131,17 +178,8 @@ def create_app(config_path="./lipgloss.yaml"):
 
     @app.post("/print", dependencies=[Depends(require_token)])
     async def print_label(request: PrintRequest):
-        if request.style not in LABEL_STYLES:
-            raise HTTPException(status_code=400, detail=f"unknown style: {request.style}")
-
-        output = labelmaker.render_label(
-            style_name=request.style,
-            input_text_1=request.line_1,
-            input_text_2=request.line_2,
-            sku=request.sku,
-            width=LABEL_WIDTH,
-            height=LABEL_HEIGHT,
-            output=_label_path("label"),
+        output = _render_printable(
+            request.style, request.sku, request.line_1, request.line_2, "label"
         )
 
         if request.sku and request.line_1:
@@ -161,7 +199,13 @@ def create_app(config_path="./lipgloss.yaml"):
             source=request.source,
         )
 
-        return {"job_id": job.job_id if job else None, "message": message}
+        # A job accepted onto a paused queue is not printing, and a caller
+        # showing the label back to whoever asked for it should not say it is
+        return {
+            "job_id": job.job_id if job else None,
+            "message": message,
+            "paused": printqueue.paused,
+        }
 
     @app.post("/print/barcodes", dependencies=[Depends(require_token)])
     async def print_barcodes(request: BarcodeRangeRequest):
@@ -235,6 +279,28 @@ def create_app(config_path="./lipgloss.yaml"):
 
         return {"job_id": job.job_id if job else None, "message": message}
 
+    @app.post("/preview", dependencies=[Depends(require_token)])
+    async def preview(request: PreviewRequest):
+        """The label /print would make, blown up for a screen, printing nothing.
+
+        Unrotated and scaled up, because this one is for a person to look at,
+        and thrown away as soon as it has been encoded: a preview that is never
+        queued has no reason to sit in the label directory.
+        """
+        output = _render_printable(
+            request.style,
+            request.sku,
+            request.line_1,
+            request.line_2,
+            "preview",
+            rotate=0,
+        )
+
+        try:
+            return Response(content=preview_png(output, request.scale), media_type="image/png")
+        finally:
+            Path(output).unlink(missing_ok=True)
+
     @app.post("/render", dependencies=[Depends(require_token)])
     async def render(request: RenderRequest):
         """Render a label and hand back the PNG, without printing it."""
@@ -264,7 +330,9 @@ def create_app(config_path="./lipgloss.yaml"):
 
     @app.delete("/queue/{job_id}", dependencies=[Depends(require_token)])
     async def cancel(job_id: int):
-        return {"message": printqueue.cancel(job_id)}
+        cancelled, message = printqueue.cancel(job_id)
+
+        return {"cancelled": cancelled, "message": message}
 
     @app.get("/events", dependencies=[Depends(require_token)])
     async def event_stream():
