@@ -595,6 +595,38 @@ def create_app(config_path="./claws.yaml"):
     async def items_by_tag(tag: str):
         return inventory.get_items_by_tag(tag)
 
+    @app.post("/tags/rename/preview", dependencies=auth)
+    async def tag_rename_preview(request: RenameRequest):
+        if not request.find.strip():
+            return {"rejected": "Give a tag to find."}
+
+        if not request.replace.strip():
+            return {"rejected": "Give a tag to rename it to."}
+
+        changes = inventory.preview_tag_rename(request.find, request.replace, request.case_sensitive)
+
+        return {"changes": changes}
+
+    @app.post("/tags/rename/apply", dependencies=auth)
+    async def tag_rename_apply(request: RenameRequest):
+        """Re-matches rather than trusting a list of skus from a prior preview,
+        for the same reason /items/rename/apply does: a tag added or removed
+        in the gap between the preview and the confirm is reflected rather
+        than clobbered."""
+        if not request.find.strip():
+            return {"rejected": "Give a tag to find."}
+
+        if not request.replace.strip():
+            return {"rejected": "Give a tag to rename it to."}
+
+        changes = inventory.preview_tag_rename(request.find, request.replace, request.case_sensitive)
+
+        if changes:
+            inventory.apply_tag_rename(changes)
+            inventory.save()
+
+        return {"changes": changes}
+
     @app.get("/locations", dependencies=auth)
     async def all_locations():
         return inventory.get_locations()

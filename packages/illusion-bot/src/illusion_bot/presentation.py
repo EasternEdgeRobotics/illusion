@@ -285,9 +285,19 @@ def _rename_line(change):
     return line
 
 
-def rename_embed(title, description, changes=None, urgent=False, verb="would change"):
-    """A find/replace preview or result: the title and description, plus as
-    many of the affected items as comfortably fit.
+def _tag_rename_line(change):
+    line = f"`{change['SKU']}` {change['OLD_TAGS']} -> {change['NEW_TAGS']}"
+
+    if len(line) > RENAME_LINE_LIMIT:
+        line = f"{line[:RENAME_LINE_LIMIT - 1]}…"
+
+    return line
+
+
+def _change_list_embed(title, description, changes, line, urgent, verb):
+    """The shared shape behind rename_embed and tag_rename_embed: a title and
+    description, plus as many affected items as comfortably fit, one per
+    line via whichever formatter the caller passes.
 
     verb switches the field heading between the preview ("3 items would
     change") and the outcome ("3 items were renamed"), so it reads right on
@@ -301,7 +311,7 @@ def rename_embed(title, description, changes=None, urgent=False, verb="would cha
 
     if changes:
         shown = changes[:MAX_RENAME_LINES]
-        lines = [_rename_line(change) for change in shown]
+        lines = [line(change) for change in shown]
 
         hidden = len(changes) - len(shown)
 
@@ -315,6 +325,16 @@ def rename_embed(title, description, changes=None, urgent=False, verb="would cha
         )
 
     return embed
+
+
+def rename_embed(title, description, changes=None, urgent=False, verb="would change"):
+    """A find/replace preview or result for item names."""
+    return _change_list_embed(title, description, changes, _rename_line, urgent, verb)
+
+
+def tag_rename_embed(title, description, changes=None, urgent=False, verb="would change"):
+    """A find/replace preview or result for merging one tag into another."""
+    return _change_list_embed(title, description, changes, _tag_rename_line, urgent, verb)
 
 
 def notice_embed(title, description, urgent=False):

@@ -753,6 +753,160 @@ async def bulk_rename(interaction: discord.Interaction, find: str, replace: str 
         view=view,
     )
 
+@dataclasses.dataclass
+class TagRenameJob:
+    """A tag find/replace the command has worked out is worth previewing.
+
+    Held onto so the Rename button re-runs exactly this find/replace rather
+    than trusting the list of skus a preview showed minutes earlier, for the
+    same reason RenameJob is.
+    """
+
+    find: str
+    replace: str
+    case_sensitive: bool = False
+
+
+class ConfirmTagRename(discord.ui.View):
+    """The preview step: the items whose tags would change are on screen,
+    nothing is written yet."""
+
+    def __init__(self, requester, job, changes):
+        super().__init__(timeout=RENAME_BUTTON_TIMEOUT)
+
+        self.requester = requester
+        self.job = job
+        self.changes = changes
+        self.message = None
+
+    async def interaction_check(self, interaction: discord.Interaction):
+        # A preview sitting in a busy channel is not somebody else's to commit
+        # a batch of tag renames to
+        if interaction.user.id == self.requester.id:
+            return True
+
+        await interaction.response.send_message(
+            "That preview is someone else's, run /rename_tag to get your own.", ephemeral=True
+        )
+
+        return False
+
+    async def on_timeout(self):
+        if self.message is None:
+            return
+
+        embed = presentation.tag_rename_embed(
+            title="Tag Rename Preview",
+            description="This preview expired, nothing was renamed.",
+            changes=self.changes,
+        )
+
+        try:
+            await self.message.edit(embed=embed, view=None)
+        except discord.HTTPException:
+            pass
+
+    @discord.ui.button(label="Rename", style=discord.ButtonStyle.success)
+    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.stop()
+
+        await interaction.response.defer()
+
+        try:
+            result = await command_handler.handler_tag_rename_apply_job(
+                self.job.find, self.job.replace, self.job.case_sensitive
+            )
+        except ServiceUnavailable as e:
+            await interaction.edit_original_response(
+                embed=presentation.tag_rename_embed(
+                    title="Rename Failed",
+                    description=f"Unable to reach claws.\n{e}",
+                    urgent=True,
+                ),
+                view=None,
+            )
+            return
+
+        if result.get("rejected"):
+            embed = presentation.tag_rename_embed(
+                title="Not Renamed", description=result["rejected"], urgent=True,
+            )
+        else:
+            changes = result["changes"]
+
+            if not changes:
+                embed = presentation.tag_rename_embed(
+                    title="Not Renamed",
+                    description="Nothing still matched by the time this was confirmed.",
+                )
+            else:
+                embed = presentation.tag_rename_embed(
+                    title="Renamed",
+                    description=(
+                        f'Merged "{self.job.find}" into "{self.job.replace}" on '
+                        f"{len(changes)} item{'s' if len(changes) != 1 else ''}."
+                    ),
+                    changes=changes,
+                    verb="were updated",
+                )
+
+        await interaction.edit_original_response(embed=embed, view=None)
+
+    @discord.ui.button(label="Discard", style=discord.ButtonStyle.secondary)
+    async def discard(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.stop()
+
+        embed = presentation.tag_rename_embed(
+            title="Tag Rename Preview",
+            description="Discarded, nothing was renamed.",
+            changes=self.changes,
+        )
+
+        await interaction.response.edit_message(embed=embed, view=None)
+
+
+@bot.tree.command(name="rename_tag", description="Rename a tag across every item that has it, merging it into an existing one if it matches")
+@app_commands.describe(
+    find_tag="Existing tag to rename",
+    replace_tag="Tag to rename it to",
+    case_sensitive="Only match a tag with the exact same capitalization",
+)
+@app_commands.autocomplete(find_tag=tag_autocomplete, replace_tag=tag_autocomplete)
+async def rename_tag(interaction: discord.Interaction, find_tag: str, replace_tag: str,
+                     case_sensitive: bool = False):
+    await interaction.response.defer()
+
+    job = TagRenameJob(find=find_tag, replace=replace_tag, case_sensitive=case_sensitive)
+
+    try:
+        result = await command_handler.handler_tag_rename_preview_job(
+            job.find, job.replace, job.case_sensitive
+        )
+    except ServiceUnavailable as e:
+        await interaction.followup.send(f"Unable to reach claws.\n{e}")
+        return
+
+    if result.get("rejected"):
+        await interaction.followup.send(result["rejected"])
+        return
+
+    changes = result["changes"]
+
+    if not changes:
+        await interaction.followup.send(f'No items are tagged "{job.find}".')
+        return
+
+    view = ConfirmTagRename(interaction.user, job, changes)
+
+    view.message = await interaction.followup.send(
+        embed=presentation.tag_rename_embed(
+            title="Tag Rename Preview",
+            description=f'Nothing has changed yet. Renaming "{job.find}" to "{job.replace}".',
+            changes=changes,
+        ),
+        view=view,
+    )
+
 @bot.tree.command(name="search_tag", description="Search inventory by tag")
 @app_commands.describe(tag="Tag to search for")
 @app_commands.autocomplete(tag=tag_autocomplete)

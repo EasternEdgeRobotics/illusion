@@ -1315,7 +1315,87 @@ class SpreadsheetManager:
 
             self.connection.commit()
             return True
-        
+
+    def preview_tag_rename(self, find_tag: str, replace_tag: str, case_sensitive: bool = False) -> list[dict[str, Any]]:
+        """Every item whose tag list would change if find_tag were renamed to replace_tag.
+
+        A tag is matched whole, never as a substring of a longer one --
+        renaming "BlueRobotics" must not also catch a hypothetical
+        "BlueRoboticsSpares". An item already carrying both is included too,
+        with the duplicate folded away in NEW_TAGS: that fold is the merge,
+        for two spellings of the same vendor that both ended up on an item.
+        """
+        find_tag = str(find_tag or "").strip()
+        replace_tag = str(replace_tag or "").strip()
+
+        if not find_tag or not replace_tag:
+            return []
+
+        fold = (lambda tag: tag) if case_sensitive else str.casefold
+        target = fold(find_tag)
+
+        with self.lock:
+            rows = self.connection.execute(
+                """
+                SELECT sku, name, tags
+                FROM items
+                WHERE tags IS NOT NULL
+                """
+            ).fetchall()
+
+        changes = []
+
+        for row in rows:
+            tags = self._split_tags(row["tags"])
+
+            if target not in {fold(tag) for tag in tags}:
+                continue
+
+            new_tags = []
+            seen = set()
+
+            for tag in tags:
+                new_tag = replace_tag if fold(tag) == target else tag
+                new_key = fold(new_tag)
+
+                if new_key in seen:
+                    continue
+
+                seen.add(new_key)
+                new_tags.append(new_tag)
+
+            changes.append(
+                {
+                    "SKU": row["sku"],
+                    "NAME": row["name"],
+                    "OLD_TAGS": self._join_tags(tags),
+                    "NEW_TAGS": self._join_tags(new_tags),
+                }
+            )
+
+        return changes
+
+    def apply_tag_rename(self, changes: list[dict[str, Any]]) -> None:
+        """Write exactly the changes given, in one transaction.
+
+        Takes the changes rather than a find/replace pair for the same reason
+        apply_rename does: the service re-runs preview_tag_rename right
+        before this, so a tag added or removed in the gap between the preview
+        and the confirm is reflected rather than clobbered.
+        """
+        with self.lock:
+            for change in changes:
+                self.connection.execute(
+                    """
+                    UPDATE items
+                    SET tags = ?
+                    WHERE sku = ?
+                    """,
+                    (change["NEW_TAGS"] or None, change["SKU"]),
+                )
+
+            self.connection.commit()
+
     def search_items(self, name_query: str, limit: int = 10) -> list[dict[str, Any]]:
         name_query = name_query.strip()
 

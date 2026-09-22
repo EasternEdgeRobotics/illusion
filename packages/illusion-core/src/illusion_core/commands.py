@@ -463,6 +463,39 @@ class DB_Commands:
 
         return await self.claws.rename_apply(find, replace or "", case_sensitive)
 
+    async def handler_tag_rename_preview_job(self, find, replace, case_sensitive=False):
+        """The whole preview result for merging one tag spelling into another.
+
+        Undecorated for the same reason handler_rename_preview_job is: the
+        Discord side needs "can't reach claws" told apart from "no items have
+        that tag", and both a tag to find and one to rename it to are
+        required -- unlike the item rename, there is no sense in which
+        merging a tag into nothing is the operation being asked for.
+        """
+        find = (find or "").strip()
+        replace = (replace or "").strip()
+
+        if not find:
+            return {"rejected": "Give a tag to find."}
+
+        if not replace:
+            return {"rejected": "Give a tag to rename it to."}
+
+        return await self.claws.tag_rename_preview(find, replace, case_sensitive)
+
+    async def handler_tag_rename_apply_job(self, find, replace, case_sensitive=False):
+        """The whole apply result, run fresh rather than off a stored preview."""
+        find = (find or "").strip()
+        replace = (replace or "").strip()
+
+        if not find:
+            return {"rejected": "Give a tag to find."}
+
+        if not replace:
+            return {"rejected": "Give a tag to rename it to."}
+
+        return await self.claws.tag_rename_apply(find, replace, case_sensitive)
+
     @reports_service_errors
     async def handler_get_tags(self):
         tags = await self.claws.tags()

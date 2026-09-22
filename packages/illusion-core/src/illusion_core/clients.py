@@ -292,6 +292,23 @@ class ClawsClient(BaseClient):
     async def items_by_tag(self, tag):
         return await self.get(f"/tags/{tag}/items")
 
+    async def tag_rename_preview(self, find, replace, case_sensitive=False):
+        """{"rejected": str} or {"changes": [{SKU, NAME, OLD_TAGS, NEW_TAGS}, ...]}."""
+        return await self.post("/tags/rename/preview", json={
+            "find": find, "replace": replace, "case_sensitive": case_sensitive,
+        })
+
+    async def tag_rename_apply(self, find, replace, case_sensitive=False):
+        """Same shape as tag_rename_preview, but written to the database.
+
+        Re-matches find/replace itself rather than being handed a list of
+        skus, so a tag added or removed after the preview was shown is
+        reflected rather than clobbered.
+        """
+        return await self.post("/tags/rename/apply", json={
+            "find": find, "replace": replace, "case_sensitive": case_sensitive,
+        })
+
     async def locations(self):
         return await self.get("/locations")
 
