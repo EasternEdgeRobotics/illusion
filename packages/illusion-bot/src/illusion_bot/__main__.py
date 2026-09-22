@@ -70,14 +70,87 @@ def render(result):
     return result
 
 
+# How long the pager buttons stay live. Nothing is at stake in paging through a
+# list, so this is only about not leaving dead buttons cluttering old messages.
+RESULTS_PAGER_TIMEOUT = 300
+
+
+class ResultsPager(discord.ui.View):
+    """Prev/Next paging for a list embed with more rows than fit on one page."""
+
+    def __init__(self, requester, rows, exclude):
+        super().__init__(timeout=RESULTS_PAGER_TIMEOUT)
+
+        self.requester = requester
+        self.rows = rows
+        self.exclude = exclude
+        self.page = 0
+        self.message = None
+
+        self._sync_buttons()
+
+    def embed(self):
+        return presentation.make_embed(self.rows, exclude=self.exclude, page=self.page)
+
+    def _sync_buttons(self):
+        self.previous_page.disabled = self.page == 0
+        self.next_page.disabled = self.page >= presentation.total_pages(self.rows) - 1
+
+    async def interaction_check(self, interaction: discord.Interaction):
+        # A results page sitting in a busy channel is not somebody else's to page through
+        if interaction.user.id == self.requester.id:
+            return True
+
+        await interaction.response.send_message(
+            "That result list is someone else's, run the command yourself to page through your own.",
+            ephemeral=True,
+        )
+
+        return False
+
+    async def on_timeout(self):
+        if self.message is None:
+            return
+
+        for child in self.children:
+            child.disabled = True
+
+        try:
+            await self.message.edit(view=self)
+        except discord.HTTPException:
+            pass
+
+    @discord.ui.button(label="◀ Prev", style=discord.ButtonStyle.secondary)
+    async def previous_page(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.page -= 1
+        self._sync_buttons()
+        await interaction.response.edit_message(embed=self.embed(), view=self)
+
+    @discord.ui.button(label="Next ▶", style=discord.ButtonStyle.secondary)
+    async def next_page(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.page += 1
+        self._sync_buttons()
+        await interaction.response.edit_message(embed=self.embed(), view=self)
+
+
 async def send_result(interaction, result, view=None):
     """Reply with whatever the handler produced, embed or plain text.
 
     Every handler can hand back a string instead of Rows: no search results, an
     invalid sku, or a service it could not reach. Sending that as embed= is what
     breaks, so the choice is made here once rather than at each call site.
+
+    A Rows result with more rows than fit on one page gets a ResultsPager
+    instead of the caller's view, unless the caller already supplied one.
     """
-    result = render(result)
+    pager = None
+
+    if view is None and isinstance(result, Rows) and presentation.total_pages(result.data) > 1:
+        pager = ResultsPager(interaction.user, result.data, result.exclude)
+        view = pager
+        result = pager.embed()
+    else:
+        result = render(result)
 
     if isinstance(result, discord.Embed):
         kwargs = {"embed": result}
@@ -90,9 +163,13 @@ async def send_result(interaction, result, view=None):
     # Deferring already used up the initial response, so which of the two to
     # call depends on whether the command deferred
     if interaction.response.is_done():
-        await interaction.followup.send(**kwargs)
+        message = await interaction.followup.send(**kwargs)
     else:
         await interaction.response.send_message(**kwargs)
+        message = await interaction.original_response() if pager is not None else None
+
+    if pager is not None:
+        pager.message = message
 
 
 async def create_low_thread(sku, item=None):
@@ -220,7 +297,12 @@ async def sku_autocomplete(interaction: discord.Interaction, current: str):
 
 
 async def tag_autocomplete(interaction: discord.Interaction, current: str):
-    """Suggest tags that already exist, so we stop growing near duplicates."""
+    """Suggest tags that already exist, so we stop growing near duplicates.
+
+    No "(count)" suffix on the label: Discord fills the field with whatever
+    the picked choice's name says, not its value, so a count left in the
+    label is what ends up typed into the field.
+    """
     try:
         tags = await claws.tags()
     except ServiceUnavailable:
@@ -235,9 +317,60 @@ async def tag_autocomplete(interaction: discord.Interaction, current: str):
         if wanted and wanted not in name.casefold():
             continue
 
-        choices.append(
-            app_commands.Choice(name=f"{name} ({tag['COUNT']})", value=name)
-        )
+        choices.append(app_commands.Choice(name=name, value=name))
+
+        if len(choices) == AUTOCOMPLETE_LIMIT:
+            break
+
+    return choices
+
+
+async def tags_autocomplete(interaction: discord.Interaction, current: str):
+    """Suggest a next tag for a comma-separated tags field.
+
+    Picking a choice replaces the whole field in Discord, not just what was
+    being typed, so unlike tag_autocomplete this rebuilds the value as
+    everything already typed plus the matched tag -- otherwise choosing a tag
+    partway through a list would wipe out the ones typed before it. Only the
+    text after the last comma is treated as the search term, and a tag
+    already in that prefix is not suggested again.
+    """
+    prefix, _, partial = current.rpartition(",")
+    prefix = prefix.strip()
+    partial = partial.strip()
+
+    try:
+        tags = await claws.tags()
+    except ServiceUnavailable:
+        return []
+
+    chosen = {tag.strip().casefold() for tag in prefix.split(",") if tag.strip()}
+    wanted = partial.casefold()
+    choices = []
+
+    for tag in tags:
+        name = tag["TAG"]
+
+        if name.casefold() in chosen:
+            continue
+
+        if wanted and wanted not in name.casefold():
+            continue
+
+        value = f"{prefix}, {name}" if prefix else name
+
+        # A choice's value has the same 100 character cap Discord puts on the
+        # label, and unlike a label this cannot just be truncated with an
+        # ellipsis without corrupting a tag further down the list
+        if len(value) > CHOICE_LABEL_LIMIT:
+            continue
+
+        # No "(count)" suffix here unlike tag_autocomplete: Discord fills the
+        # field with the displayed name on pick, not the value, so a count
+        # left in the label ends up typed into the field. Fine to leave once
+        # this is the only tag going in, but a second tag added after without
+        # first deleting it bakes the count into the tags this item gets.
+        choices.append(app_commands.Choice(name=value, value=value))
 
         if len(choices) == AUTOCOMPLETE_LIMIT:
             break
@@ -393,7 +526,7 @@ async def delete(interaction: discord.Interaction, sku: str):
                        location="Where the item lives, ex: Shelf 5A",
                        tags="Comma-separated tags", notes="Notes about this item",
                        )
-@app_commands.autocomplete(location=location_autocomplete)
+@app_commands.autocomplete(location=location_autocomplete, tags=tags_autocomplete)
 
 async def add_item(interaction: discord.Interaction, item_name: str,
                    quantity: float, order_quantity: float, low_threshold: float, unit: str,
@@ -413,7 +546,7 @@ async def add_item(interaction: discord.Interaction, item_name: str,
 
     await interaction.response.send_message(response_message)
 
-@bot.tree.command(name="add_kanban", description="Add item to inventory w/ kanban tracking")
+@bot.tree.command(name="add_item_kanban", description="Add item to inventory w/ kanban tracking")
 @app_commands.describe(item_name="Item Name",
                        order_quantity="Number of units to order when stock low", digikey_part_number="Digikey Part Number",
                        vendor_1="Source 1 for Item", link_1="Source 1 Purchase Link",
@@ -424,9 +557,9 @@ async def add_item(interaction: discord.Interaction, item_name: str,
                        location="Where the item lives, ex: Shelf 5A",
                        tags="Comma-separated tags", notes="Notes about this item",
                        )
-@app_commands.autocomplete(location=location_autocomplete)
+@app_commands.autocomplete(location=location_autocomplete, tags=tags_autocomplete)
 
-async def add_kanban(interaction: discord.Interaction, item_name: str, order_quantity: float,
+async def add_item_kanban(interaction: discord.Interaction, item_name: str, order_quantity: float,
                      location: str | None = None,
                      digikey_part_number: str | None = None, tags: str | None = None, notes: str | None = None,
                    vendor_1: str | None = None, link_1: str | None = None, vendor_2: str | None = None, link_2: str | None = None,
@@ -443,7 +576,7 @@ async def add_kanban(interaction: discord.Interaction, item_name: str, order_qua
 
     await interaction.response.send_message(response_message)
 
-@bot.tree.command(name="add_hybrid", description="Add item to inventory w/ hybrid tracking")
+@bot.tree.command(name="add_item_hybrid", description="Add item to inventory w/ hybrid tracking")
 @app_commands.describe(item_name="Item Name",
                        order_quantity="Number of units to order when stock low", unit="Unit name", digikey_part_number="Digikey Part Number",
                        quantity="Number of units on hand", low_threshold="Minimum Stock", decrease_amount="Amount to decrease by",
@@ -455,9 +588,9 @@ async def add_kanban(interaction: discord.Interaction, item_name: str, order_qua
                        location="Where the item lives, ex: Shelf 5A",
                        tags="Comma-separated tags", notes="Notes about this item",
                        )
-@app_commands.autocomplete(location=location_autocomplete)
+@app_commands.autocomplete(location=location_autocomplete, tags=tags_autocomplete)
 
-async def add_hybrid(interaction: discord.Interaction, item_name: str,
+async def add_item_hybrid(interaction: discord.Interaction, item_name: str,
                    quantity: float, order_quantity: float, low_threshold: float, unit: str, decrease_amount: float,
                    location: str | None = None,
                    digikey_part_number: str | None = None, tags: str | None = None, notes: str | None = None,
@@ -476,7 +609,7 @@ async def add_hybrid(interaction: discord.Interaction, item_name: str,
 
     await interaction.response.send_message(response_message)
 
-@bot.tree.command(name="add_with_dkpn", description="Add item to inventory w/ per item tracking, getting info using a Digikey part number")
+@bot.tree.command(name="add_item_with_dkpn", description="Add item to inventory w/ per item tracking, getting info using a Digikey part number")
 @app_commands.describe(item_name="Item Name",
                        order_quantity="Number of units to order when stock low",
                        unit="Unit name", digikey_part_number="Digikey Part Number",
@@ -484,9 +617,9 @@ async def add_hybrid(interaction: discord.Interaction, item_name: str,
                        location="Where the item lives, ex: Shelf 5A",
                        tags="Comma-separated tags", notes="Notes about this item",
                        )
-@app_commands.autocomplete(location=location_autocomplete)
+@app_commands.autocomplete(location=location_autocomplete, tags=tags_autocomplete)
 
-async def add_with_dkpn(interaction: discord.Interaction, digikey_part_number: str,
+async def add_item_with_dkpn(interaction: discord.Interaction, digikey_part_number: str,
                    quantity: float, order_quantity: float, low_threshold: float, unit: str, item_name: str | None = None,
                    location: str | None = None, tags: str | None = None, notes: str | None = None):
 
@@ -520,6 +653,316 @@ async def search(interaction: discord.Interaction, name: str):
 
     await send_result(interaction, await command_handler.handler_search(name))
 
+# How long the rename buttons stay live. Same span as a print preview: long
+# enough to read the whole list, short enough that a stale preview cannot be
+# committed against a catalogue that has moved on.
+RENAME_BUTTON_TIMEOUT = 300
+
+
+@dataclasses.dataclass
+class RenameJob:
+    """A find/replace the command has worked out is worth previewing.
+
+    Held onto so the Rename button re-runs exactly this find/replace rather
+    than trusting the list of skus a preview showed minutes earlier -- an item
+    added, edited, or deleted in the meantime is picked up correctly because
+    the match is redone at confirm time, not replayed from what was on screen.
+    """
+
+    find: str
+    replace: str = ""
+    case_sensitive: bool = False
+
+
+class ConfirmRename(discord.ui.View):
+    """The preview step: the proposed renames are on screen, nothing is written yet."""
+
+    def __init__(self, requester, job, changes):
+        super().__init__(timeout=RENAME_BUTTON_TIMEOUT)
+
+        self.requester = requester
+        self.job = job
+        self.changes = changes
+        self.message = None
+
+    async def interaction_check(self, interaction: discord.Interaction):
+        # A preview sitting in a busy channel is not somebody else's to commit
+        # a batch of renames to
+        if interaction.user.id == self.requester.id:
+            return True
+
+        await interaction.response.send_message(
+            "That preview is someone else's, run /bulk_rename to get your own.", ephemeral=True
+        )
+
+        return False
+
+    async def on_timeout(self):
+        if self.message is None:
+            return
+
+        embed = presentation.rename_embed(
+            title="Rename Preview",
+            description="This preview expired, nothing was renamed.",
+            changes=self.changes,
+        )
+
+        try:
+            await self.message.edit(embed=embed, view=None)
+        except discord.HTTPException:
+            pass
+
+    @discord.ui.button(label="Rename", style=discord.ButtonStyle.success)
+    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.stop()
+
+        await interaction.response.defer()
+
+        try:
+            result = await command_handler.handler_rename_apply_job(
+                self.job.find, self.job.replace, self.job.case_sensitive
+            )
+        except ServiceUnavailable as e:
+            await interaction.edit_original_response(
+                embed=presentation.rename_embed(
+                    title="Rename Failed",
+                    description=f"Unable to reach claws.\n{e}",
+                    urgent=True,
+                ),
+                view=None,
+            )
+            return
+
+        if result.get("rejected"):
+            embed = presentation.rename_embed(
+                title="Not Renamed", description=result["rejected"], urgent=True,
+            )
+        else:
+            changes = result["changes"]
+
+            if not changes:
+                embed = presentation.rename_embed(
+                    title="Not Renamed",
+                    description="Nothing still matched by the time this was confirmed.",
+                )
+            else:
+                embed = presentation.rename_embed(
+                    title="Renamed",
+                    description=f"Renamed {len(changes)} item{'s' if len(changes) != 1 else ''}.",
+                    changes=changes,
+                    verb="were renamed",
+                )
+
+        await interaction.edit_original_response(embed=embed, view=None)
+
+    @discord.ui.button(label="Discard", style=discord.ButtonStyle.secondary)
+    async def discard(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.stop()
+
+        embed = presentation.rename_embed(
+            title="Rename Preview",
+            description="Discarded, nothing was renamed.",
+            changes=self.changes,
+        )
+
+        await interaction.response.edit_message(embed=embed, view=None)
+
+
+@bot.tree.command(name="bulk_rename", description="Find and replace text within item names")
+@app_commands.describe(
+    find="Text to find in item names",
+    replace="Text to replace it with, leave empty to remove it",
+    case_sensitive="Only match text with the exact same capitalization",
+)
+async def bulk_rename(interaction: discord.Interaction, find: str, replace: str = "",
+                      case_sensitive: bool = False):
+    await interaction.response.defer()
+
+    job = RenameJob(find=find, replace=replace, case_sensitive=case_sensitive)
+
+    try:
+        result = await command_handler.handler_rename_preview_job(
+            job.find, job.replace, job.case_sensitive
+        )
+    except ServiceUnavailable as e:
+        await interaction.followup.send(f"Unable to reach claws.\n{e}")
+        return
+
+    if result.get("rejected"):
+        await interaction.followup.send(result["rejected"])
+        return
+
+    changes = result["changes"]
+
+    if not changes:
+        await interaction.followup.send(f'No item names contain "{job.find}".')
+        return
+
+    view = ConfirmRename(interaction.user, job, changes)
+
+    view.message = await interaction.followup.send(
+        embed=presentation.rename_embed(
+            title="Rename Preview",
+            description="Nothing has been renamed yet.",
+            changes=changes,
+        ),
+        view=view,
+    )
+
+@dataclasses.dataclass
+class TagRenameJob:
+    """A tag find/replace the command has worked out is worth previewing.
+
+    Held onto so the Rename button re-runs exactly this find/replace rather
+    than trusting the list of skus a preview showed minutes earlier, for the
+    same reason RenameJob is.
+    """
+
+    find: str
+    replace: str
+    case_sensitive: bool = False
+
+
+class ConfirmTagRename(discord.ui.View):
+    """The preview step: the items whose tags would change are on screen,
+    nothing is written yet."""
+
+    def __init__(self, requester, job, changes):
+        super().__init__(timeout=RENAME_BUTTON_TIMEOUT)
+
+        self.requester = requester
+        self.job = job
+        self.changes = changes
+        self.message = None
+
+    async def interaction_check(self, interaction: discord.Interaction):
+        # A preview sitting in a busy channel is not somebody else's to commit
+        # a batch of tag renames to
+        if interaction.user.id == self.requester.id:
+            return True
+
+        await interaction.response.send_message(
+            "That preview is someone else's, run /rename_tag to get your own.", ephemeral=True
+        )
+
+        return False
+
+    async def on_timeout(self):
+        if self.message is None:
+            return
+
+        embed = presentation.tag_rename_embed(
+            title="Tag Rename Preview",
+            description="This preview expired, nothing was renamed.",
+            changes=self.changes,
+        )
+
+        try:
+            await self.message.edit(embed=embed, view=None)
+        except discord.HTTPException:
+            pass
+
+    @discord.ui.button(label="Rename", style=discord.ButtonStyle.success)
+    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.stop()
+
+        await interaction.response.defer()
+
+        try:
+            result = await command_handler.handler_tag_rename_apply_job(
+                self.job.find, self.job.replace, self.job.case_sensitive
+            )
+        except ServiceUnavailable as e:
+            await interaction.edit_original_response(
+                embed=presentation.tag_rename_embed(
+                    title="Rename Failed",
+                    description=f"Unable to reach claws.\n{e}",
+                    urgent=True,
+                ),
+                view=None,
+            )
+            return
+
+        if result.get("rejected"):
+            embed = presentation.tag_rename_embed(
+                title="Not Renamed", description=result["rejected"], urgent=True,
+            )
+        else:
+            changes = result["changes"]
+
+            if not changes:
+                embed = presentation.tag_rename_embed(
+                    title="Not Renamed",
+                    description="Nothing still matched by the time this was confirmed.",
+                )
+            else:
+                embed = presentation.tag_rename_embed(
+                    title="Renamed",
+                    description=(
+                        f'Merged "{self.job.find}" into "{self.job.replace}" on '
+                        f"{len(changes)} item{'s' if len(changes) != 1 else ''}."
+                    ),
+                    changes=changes,
+                    verb="were updated",
+                )
+
+        await interaction.edit_original_response(embed=embed, view=None)
+
+    @discord.ui.button(label="Discard", style=discord.ButtonStyle.secondary)
+    async def discard(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.stop()
+
+        embed = presentation.tag_rename_embed(
+            title="Tag Rename Preview",
+            description="Discarded, nothing was renamed.",
+            changes=self.changes,
+        )
+
+        await interaction.response.edit_message(embed=embed, view=None)
+
+
+@bot.tree.command(name="rename_tag", description="Rename a tag across every item that has it, merging it into an existing one if it matches")
+@app_commands.describe(
+    find_tag="Existing tag to rename",
+    replace_tag="Tag to rename it to",
+    case_sensitive="Only match a tag with the exact same capitalization",
+)
+@app_commands.autocomplete(find_tag=tag_autocomplete, replace_tag=tag_autocomplete)
+async def rename_tag(interaction: discord.Interaction, find_tag: str, replace_tag: str,
+                     case_sensitive: bool = False):
+    await interaction.response.defer()
+
+    job = TagRenameJob(find=find_tag, replace=replace_tag, case_sensitive=case_sensitive)
+
+    try:
+        result = await command_handler.handler_tag_rename_preview_job(
+            job.find, job.replace, job.case_sensitive
+        )
+    except ServiceUnavailable as e:
+        await interaction.followup.send(f"Unable to reach claws.\n{e}")
+        return
+
+    if result.get("rejected"):
+        await interaction.followup.send(result["rejected"])
+        return
+
+    changes = result["changes"]
+
+    if not changes:
+        await interaction.followup.send(f'No items are tagged "{job.find}".')
+        return
+
+    view = ConfirmTagRename(interaction.user, job, changes)
+
+    view.message = await interaction.followup.send(
+        embed=presentation.tag_rename_embed(
+            title="Tag Rename Preview",
+            description=f'Nothing has changed yet. Renaming "{job.find}" to "{job.replace}".',
+            changes=changes,
+        ),
+        view=view,
+    )
+
 @bot.tree.command(name="search_tag", description="Search inventory by tag")
 @app_commands.describe(tag="Tag to search for")
 @app_commands.autocomplete(tag=tag_autocomplete)
@@ -535,11 +978,11 @@ async def get_tags(interaction: discord.Interaction):
 
     await send_result(interaction, await command_handler.handler_get_tags())
 
-@bot.tree.command(name="add_tag", description="Add a tag to an item")
-@app_commands.describe(sku="Item SKU", tag="Tag to add")
-@app_commands.autocomplete(sku=sku_autocomplete, tag=tag_autocomplete)
-async def add_tag(interaction: discord.Interaction, sku: str, tag: str):
-    response_message = await command_handler.handler_add_tag(sku, tag)
+@bot.tree.command(name="add_tag", description="Add one or more tags to an item")
+@app_commands.describe(sku="Item SKU", tags="Tag to add, or several separated by commas")
+@app_commands.autocomplete(sku=sku_autocomplete, tags=tags_autocomplete)
+async def add_tag(interaction: discord.Interaction, sku: str, tags: str):
+    response_message = await command_handler.handler_add_tag(sku, tags)
     await interaction.response.send_message(response_message)
 
 @bot.tree.command(name="get_locations", description="List every location in use")
@@ -1179,7 +1622,7 @@ async def printer_info(interaction: discord.Interaction):
                        location="Where the item lives, ex: Shelf 5A",
                        tags="Comma-separated tags", notes="Notes about this item",
                        )
-@app_commands.autocomplete(sku=sku_autocomplete, location=location_autocomplete)
+@app_commands.autocomplete(sku=sku_autocomplete, location=location_autocomplete, tags=tags_autocomplete)
 async def update_item(interaction: discord.Interaction, sku: str,
                       item_name: str | None = None, location: str | None = None,
                       quantity: str | None = None, order_quantity: str | None = None,

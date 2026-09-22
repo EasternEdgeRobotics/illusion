@@ -146,7 +146,7 @@ class DB_Commands:
 
     @reports_service_errors
     async def handler_search(self, name: str):
-        results = await self.claws.search(name, limit=10)
+        results = await self.claws.search(name, limit=50)
 
         if not results:
             return f"No items found matching: {name}"
@@ -442,6 +442,60 @@ class DB_Commands:
 
         return f"New item {created['sku']} created from {dkpn} with {quantity} on hand"
 
+    async def handler_rename_preview_job(self, find, replace="", case_sensitive=False):
+        """The whole preview result, for a caller that shows the list before
+        anything is written. Undecorated like handler_print_job: a Discord
+        preview needs to tell "nothing to reach" apart from "nothing matched"
+        rather than have both collapse into the same string."""
+        find = (find or "").strip()
+
+        if not find:
+            return {"rejected": "Give some text to find in item names."}
+
+        return await self.claws.rename_preview(find, replace or "", case_sensitive)
+
+    async def handler_rename_apply_job(self, find, replace="", case_sensitive=False):
+        """The whole apply result, run fresh rather than off a stored preview."""
+        find = (find or "").strip()
+
+        if not find:
+            return {"rejected": "Give some text to find in item names."}
+
+        return await self.claws.rename_apply(find, replace or "", case_sensitive)
+
+    async def handler_tag_rename_preview_job(self, find, replace, case_sensitive=False):
+        """The whole preview result for merging one tag spelling into another.
+
+        Undecorated for the same reason handler_rename_preview_job is: the
+        Discord side needs "can't reach claws" told apart from "no items have
+        that tag", and both a tag to find and one to rename it to are
+        required -- unlike the item rename, there is no sense in which
+        merging a tag into nothing is the operation being asked for.
+        """
+        find = (find or "").strip()
+        replace = (replace or "").strip()
+
+        if not find:
+            return {"rejected": "Give a tag to find."}
+
+        if not replace:
+            return {"rejected": "Give a tag to rename it to."}
+
+        return await self.claws.tag_rename_preview(find, replace, case_sensitive)
+
+    async def handler_tag_rename_apply_job(self, find, replace, case_sensitive=False):
+        """The whole apply result, run fresh rather than off a stored preview."""
+        find = (find or "").strip()
+        replace = (replace or "").strip()
+
+        if not find:
+            return {"rejected": "Give a tag to find."}
+
+        if not replace:
+            return {"rejected": "Give a tag to rename it to."}
+
+        return await self.claws.tag_rename_apply(find, replace, case_sensitive)
+
     @reports_service_errors
     async def handler_get_tags(self):
         tags = await self.claws.tags()
@@ -482,15 +536,20 @@ class DB_Commands:
         return Rows(results, exclude)
 
     @reports_service_errors
-    async def handler_add_tag(self, sku: str, tag: str):
+    async def handler_add_tag(self, sku: str, tags: str):
+        """Adds every tag in a comma-separated list, one at a time.
+
+        Comma-separated rather than one call per tag because that is how
+        tags are typed everywhere else in the bot (add_item's tags field,
+        bulk_rename_tag's autocomplete): the split is what used to be the
+        "no commas" rule on a single tag, just read the other way around.
+        """
         sku = illusion_helpers.clean_sku(sku)
-        tag = tag.strip()
 
-        if not tag:
+        requested = [tag.strip() for tag in tags.split(",") if tag.strip()]
+
+        if not requested:
             return "Tag cannot be empty."
-
-        if "," in tag:
-            return "Tag cannot contain commas."
 
         existing_tags = await self.claws.item_tags(sku)
 
@@ -499,12 +558,36 @@ class DB_Commands:
 
         existing_keys = {existing_tag.casefold() for existing_tag in existing_tags}
 
-        if tag.casefold() in existing_keys:
-            return f"{sku} already has tag: {tag}"
+        added = []
+        already_had = []
+        seen = set()
 
-        await self.claws.add_tag(sku, tag)
+        for tag in requested:
+            key = tag.casefold()
 
-        return f"Added tag `{tag}` to {sku}"
+            if key in seen:
+                continue
+
+            seen.add(key)
+
+            if key in existing_keys:
+                already_had.append(tag)
+                continue
+
+            await self.claws.add_tag(sku, tag)
+            existing_keys.add(key)
+            added.append(tag)
+
+        parts = []
+
+        if added:
+            noun = "tag" if len(added) == 1 else "tags"
+            parts.append(f"Added {noun} {', '.join(f'`{tag}`' for tag in added)} to {sku}")
+
+        if already_had:
+            parts.append(f"{sku} already had {', '.join(f'`{tag}`' for tag in already_had)}")
+
+        return "\n".join(parts)
 
     @reports_service_errors
     async def handler_get_locations(self):

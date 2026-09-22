@@ -66,6 +66,12 @@ class VendorRequest(BaseModel):
     link: str
 
 
+class RenameRequest(BaseModel):
+    find: str
+    replace: str = ""
+    case_sensitive: bool = False
+
+
 class LowThread(BaseModel):
     thread_id: int | None = None
 
@@ -176,6 +182,26 @@ def fields_problem(tracking_mode, values, sku=None):
     requirement = "must be a whole number" if len(bad) == 1 else "must be whole numbers"
 
     return f"{subject} is tracked per item, so {' and '.join(bad)} {requirement}. {FRACTION_HINT}"
+
+
+def rename_problem(changes):
+    """Whether this batch of renames is safe to write, as a reason or None.
+
+    The one thing a substring replace can do that nothing else here can undo
+    cleanly is blank out a name entirely (replacing "Capasiter" with "" on an
+    item named exactly that). Caught here rather than left to the NAME NOT
+    NULL constraint, which would fail the whole batch with a database error
+    instead of saying which items caused it.
+    """
+    blank = [change for change in changes if not change["NEW_NAME"].strip()]
+
+    if not blank:
+        return None
+
+    skus = ", ".join(change["SKU"] for change in blank[:5])
+    more = "" if len(blank) <= 5 else f", and {len(blank) - 5} more"
+
+    return f"That would blank the name of {skus}{more}. Refusing."
 
 
 def create_app(config_path="./claws.yaml"):
@@ -524,6 +550,39 @@ def create_app(config_path="./claws.yaml"):
     async def search(name: str, limit: int = 10):
         return inventory.search_items(name, limit=limit)
 
+    @app.post("/items/rename/preview", dependencies=auth)
+    async def rename_preview(request: RenameRequest):
+        if not request.find.strip():
+            return {"rejected": "Give some text to find in item names."}
+
+        changes = inventory.preview_rename(request.find, request.replace, request.case_sensitive)
+        problem = rename_problem(changes)
+
+        if problem:
+            return {"rejected": problem}
+
+        return {"changes": changes}
+
+    @app.post("/items/rename/apply", dependencies=auth)
+    async def rename_apply(request: RenameRequest):
+        """Re-matches rather than trusting a list of skus from a prior preview,
+        so a rename confirmed minutes later reflects the catalogue as it is
+        now, not as it was when the preview was shown."""
+        if not request.find.strip():
+            return {"rejected": "Give some text to find in item names."}
+
+        changes = inventory.preview_rename(request.find, request.replace, request.case_sensitive)
+        problem = rename_problem(changes)
+
+        if problem:
+            return {"rejected": problem}
+
+        if changes:
+            inventory.apply_rename(changes)
+            inventory.save()
+
+        return {"changes": changes}
+
     @app.get("/suggest", dependencies=auth)
     async def suggest(query: str = "", limit: int = 25):
         return inventory.suggest_items(query, limit=limit)
@@ -535,6 +594,38 @@ def create_app(config_path="./claws.yaml"):
     @app.get("/tags/{tag}/items", dependencies=auth)
     async def items_by_tag(tag: str):
         return inventory.get_items_by_tag(tag)
+
+    @app.post("/tags/rename/preview", dependencies=auth)
+    async def tag_rename_preview(request: RenameRequest):
+        if not request.find.strip():
+            return {"rejected": "Give a tag to find."}
+
+        if not request.replace.strip():
+            return {"rejected": "Give a tag to rename it to."}
+
+        changes = inventory.preview_tag_rename(request.find, request.replace, request.case_sensitive)
+
+        return {"changes": changes}
+
+    @app.post("/tags/rename/apply", dependencies=auth)
+    async def tag_rename_apply(request: RenameRequest):
+        """Re-matches rather than trusting a list of skus from a prior preview,
+        for the same reason /items/rename/apply does: a tag added or removed
+        in the gap between the preview and the confirm is reflected rather
+        than clobbered."""
+        if not request.find.strip():
+            return {"rejected": "Give a tag to find."}
+
+        if not request.replace.strip():
+            return {"rejected": "Give a tag to rename it to."}
+
+        changes = inventory.preview_tag_rename(request.find, request.replace, request.case_sensitive)
+
+        if changes:
+            inventory.apply_tag_rename(changes)
+            inventory.save()
+
+        return {"changes": changes}
 
     @app.get("/locations", dependencies=auth)
     async def all_locations():

@@ -266,6 +266,23 @@ class ClawsClient(BaseClient):
     async def search(self, name, limit=10):
         return await self.get("/search", params={"name": name, "limit": limit})
 
+    async def rename_preview(self, find, replace="", case_sensitive=False):
+        """{"rejected": str} or {"changes": [{SKU, OLD_NAME, NEW_NAME}, ...]}."""
+        return await self.post("/items/rename/preview", json={
+            "find": find, "replace": replace, "case_sensitive": case_sensitive,
+        })
+
+    async def rename_apply(self, find, replace="", case_sensitive=False):
+        """Same shape as rename_preview, but written to the database.
+
+        Re-matches find/replace itself rather than being handed a list of
+        skus, so a rename confirmed after the catalogue moved on renames
+        what actually matches now.
+        """
+        return await self.post("/items/rename/apply", json={
+            "find": find, "replace": replace, "case_sensitive": case_sensitive,
+        })
+
     async def suggest(self, query, limit=25):
         return await self.get("/suggest", params={"query": query, "limit": limit})
 
@@ -274,6 +291,23 @@ class ClawsClient(BaseClient):
 
     async def items_by_tag(self, tag):
         return await self.get(f"/tags/{tag}/items")
+
+    async def tag_rename_preview(self, find, replace, case_sensitive=False):
+        """{"rejected": str} or {"changes": [{SKU, NAME, OLD_TAGS, NEW_TAGS}, ...]}."""
+        return await self.post("/tags/rename/preview", json={
+            "find": find, "replace": replace, "case_sensitive": case_sensitive,
+        })
+
+    async def tag_rename_apply(self, find, replace, case_sensitive=False):
+        """Same shape as tag_rename_preview, but written to the database.
+
+        Re-matches find/replace itself rather than being handed a list of
+        skus, so a tag added or removed after the preview was shown is
+        reflected rather than clobbered.
+        """
+        return await self.post("/tags/rename/apply", json={
+            "find": find, "replace": replace, "case_sensitive": case_sensitive,
+        })
 
     async def locations(self):
         return await self.get("/locations")
