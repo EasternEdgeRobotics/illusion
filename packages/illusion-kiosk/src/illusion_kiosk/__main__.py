@@ -531,6 +531,9 @@ async def graceful_exit(reason: str = "unknown"):
             pass
 
     for client in (claws, lipgloss):
+        if client is None:
+            continue
+
         try:
             await client.aclose()
         except Exception as e:
@@ -573,10 +576,15 @@ claws = ClawsClient(
     illusion_config.get(config, "kiosk.claws.token"),
 )
 
-lipgloss = LipglossClient(
-    illusion_config.get(config, "kiosk.lipgloss.url"),
-    illusion_config.get(config, "kiosk.lipgloss.token"),
-)
+# Its settings are only required when printing is on, and every command that
+# reaches it is gated on PRINTING_ENABLED, so there is nothing to build without
+lipgloss = None
+
+if PRINTING_ENABLED:
+    lipgloss = LipglossClient(
+        illusion_config.get(config, "kiosk.lipgloss.url"),
+        illusion_config.get(config, "kiosk.lipgloss.token"),
+    )
 
 command_handler = DB_Commands(claws, lipgloss, boot_time)
 
