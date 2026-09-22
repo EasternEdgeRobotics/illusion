@@ -65,7 +65,7 @@ class DB_Commands:
 
     @reports_service_errors
     async def handler_add_item(self, item_name, order_quantity, tracking_mode="KANBAN", quantity_on_hand=None,
-                               low_threshold=None, unit=None, decrease_amount=None, vendor_1 = None, link_1 = None, 
+                               low_threshold=None, decrease_amount=None, vendor_1 = None, link_1 = None, 
                                vendor_2 = None, link_2 = None, vendor_3 = None, link_3 = None, 
                                vendor_4 = None, link_4 = None, vendor_5 = None, link_5 = None,
                                digikey_part_number = None, tags = None, notes = None, location = None,):
@@ -82,7 +82,6 @@ class DB_Commands:
             "QUANTITY_ON_HAND": quantity_on_hand,
             "LOW_THRESHOLD": low_threshold,
             "LOW_THREAD_ID": None,
-            "UNIT": unit,
             "DECREASE_AMOUNT": decrease_amount,
             "LINK_1": link_1,
             "VENDOR_1": vendor_1,
@@ -132,7 +131,7 @@ class DB_Commands:
 
         if item is not None:
             if hide_ext:
-                exclude = ["TRACKING_MODE", "LOW_THRESHOLD", "UNIT", "LOW_THREAD_ID", "DECREASE_AMOUNT",
+                exclude = ["TRACKING_MODE", "LOW_THRESHOLD", "LOW_THREAD_ID", "DECREASE_AMOUNT",
                             "VENDOR_1", "LINK_1", "VENDOR_2", "LINK_2", "VENDOR_3", "LINK_3", "VENDOR_4", "LINK_4", "VENDOR_5", "LINK_5"]
 
                 if item["TRACKING_MODE"] == "KANBAN":
@@ -180,7 +179,6 @@ class DB_Commands:
             "LOW_THREAD_ID",
             "TRACKING_MODE",
             "LOW_THRESHOLD",
-            "UNIT",
             "DECREASE_AMOUNT",
             "ORDER_QUANTITY",
             "LOW",
@@ -215,11 +213,9 @@ class DB_Commands:
 
             return f"{sku} already marked as low"
 
-        unit = item["UNIT"] or "units"
-
         response_message = (
             f"{sku} decreased by "
-            f"{illusion_helpers.format_quantity(result['decrease_amount'])} {unit}: "
+            f"{illusion_helpers.format_quantity(result['decrease_amount'])} units: "
             f"{illusion_helpers.format_quantity(result['old_quantity'])} -> "
             f"{illusion_helpers.format_quantity(result['new_quantity'])}"
         )
@@ -249,11 +245,9 @@ class DB_Commands:
 
     def _increase_message(self, sku, amount, result):
         item = result["item"]
-        unit = item["UNIT"] or "units"
-
         response_message = (
-            f"{sku} increased by {illusion_helpers.format_quantity(amount)} {unit}. "
-            f"New stock: {illusion_helpers.format_quantity(item['QUANTITY_ON_HAND'])} {unit}. "
+            f"{sku} increased by {illusion_helpers.format_quantity(amount)} units. "
+            f"New stock: {illusion_helpers.format_quantity(item['QUANTITY_ON_HAND'])} units. "
             f"Low: {item['LOW']}"
         )
 
@@ -277,11 +271,9 @@ class DB_Commands:
             return result["rejected"]
 
         item = result["item"]
-        unit = item["UNIT"] or "units"
-
         response_message = (
             f"{sku} stock set to "
-            f"{illusion_helpers.format_quantity(item['QUANTITY_ON_HAND'])} {unit}. "
+            f"{illusion_helpers.format_quantity(item['QUANTITY_ON_HAND'])} units. "
             f"Low: {item['LOW']}"
         )
 
@@ -599,7 +591,6 @@ class DB_Commands:
             "LOW_THREAD_ID",
             "TRACKING_MODE",
             "LOW_THRESHOLD",
-            "UNIT",
             "DECREASE_AMOUNT",
             "ORDER_QUANTITY",
             "LOW",
@@ -692,7 +683,6 @@ class DB_Commands:
             "LOW_THREAD_ID",
             "TRACKING_MODE",
             "LOW_THRESHOLD",
-            "UNIT",
             "DECREASE_AMOUNT",
             "ORDER_QUANTITY",
             "LOW",

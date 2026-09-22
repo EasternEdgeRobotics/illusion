@@ -59,10 +59,8 @@ def make_low_thread_content(item):
     if item["TRACKING_MODE"] != "KANBAN":
         stock_lines.extend(
             [
-                f"Current Stock: {format_quantity(item['QUANTITY_ON_HAND'])} "
-                f"{item['UNIT'] or ''}".strip(),
-                f"Low Threshold: {format_quantity(item['LOW_THRESHOLD'])} "
-                f"{item['UNIT'] or ''}".strip(),
+                f"Current Stock: {format_quantity(item['QUANTITY_ON_HAND'])}",
+                f"Low Threshold: {format_quantity(item['LOW_THRESHOLD'])}",
             ]
         )
 

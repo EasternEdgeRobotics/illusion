@@ -15,7 +15,6 @@ FIELD_NAMES = {
     "QUANTITY_ON_HAND": "Quantity",
     "LOW_THRESHOLD": "Low Threshold",
     "LOW_THREAD_ID": "Low Thread",
-    "UNIT": "Unit",
     "DECREASE_AMOUNT": "Decrease By",
     "LOW": "Low",
     "VENDOR_1": "Vendor 1",
