@@ -92,6 +92,11 @@ async def command_help():
             "DESCRIPTION": "Exit illusion",
         },
         {
+            "COMMAND": "clear",
+            "USAGE": "clear",
+            "DESCRIPTION": "Clear the terminal",
+        },
+        {
             "COMMAND": "resolve",
             "USAGE": "resolve <sku>",
             "DESCRIPTION": "Mark an item as not low",
@@ -214,16 +219,62 @@ def terminal_print(message):
     # The input prompt has no trailing newline, so anything printed from the
     # background lands on top of it, reprint it to keep the input line intact
     print(f"\n{message}\n> ", end="", flush=True)
+    mark_activity()
 
 async def terminal_notify(event):
     # The terminal gets the plain text; the title and embed are for discord
     terminal_print(event["message"])
 
+
+# When the screen last changed, and whether anything is on it that an idle
+# clear should wipe. Without the flag an untouched kiosk would clear its
+# already empty screen every half hour for no reason.
+last_activity = time.monotonic()
+screen_dirty = True
+
+
+def mark_activity():
+    global last_activity, screen_dirty
+
+    last_activity = time.monotonic()
+    screen_dirty = True
+
+
+def print_banner():
+    print(f"illusion {illusion_version}")
+    print("ready")
+
+
+def clear_terminal():
+    global screen_dirty
+
+    # Home the cursor, clear the screen, then the scrollback too, otherwise a
+    # week of scans is still one scroll away
+    print("\033[H\033[2J\033[3J", end="")
+    print_banner()
+    screen_dirty = False
+
+
+async def idle_clear_loop():
+    """Clear the terminal once it has sat untouched for IDLE_CLEAR_SECONDS."""
+    while not shutdown_event.is_set():
+        await asyncio.sleep(IDLE_CHECK_SECONDS)
+
+        if not screen_dirty or time.monotonic() - last_activity < IDLE_CLEAR_SECONDS:
+            continue
+
+        clear_terminal()
+
+        # input() is still blocked in its thread, so reissue the prompt along
+        # with anything typed but never entered, which readline still holds
+        pending = readline.get_line_buffer() if "readline" in globals() else ""
+        print(f"> {pending}", end="", flush=True)
+
+
 async def terminal_loop():
     register_notifier(TERMINAL_REPLY_TO, terminal_notify)
 
-    print(f"illusion {illusion_version}")
-    print("ready")
+    print_banner()
 
     # The barcode of a DigiKey bag refused as a repeat by the command just
     # before this one. Only ever the immediately previous command, so a stray
@@ -246,6 +297,8 @@ async def terminal_loop():
         if not text:
             continue
 
+        mark_activity()
+
         parts = text.split(maxsplit=2) # Make sure to update this if commands w/ 3+ fields are added
         command = parts[0].lower()
         response_message = None
@@ -258,6 +311,9 @@ async def terminal_loop():
                 print(response_message)
                 await graceful_exit("terminal exit")
                 break
+
+            elif command == "clear" and len(parts) == 1:
+                clear_terminal()
 
             elif command == "help" and len(parts) >= 1:
                 response_message = await command_help()
@@ -529,6 +585,10 @@ HOSTNAME = socket.gethostname()
 HEALTH_HOST = illusion_config.get(config, "kiosk.health.host", "127.0.0.1")
 HEALTH_PORT = illusion_config.get(config, "kiosk.health.port", 8082)
 
+# 0 turns the idle clear off
+IDLE_CLEAR_SECONDS = illusion_config.get(config, "kiosk.terminal.idle_clear_minutes", 30) * 60
+IDLE_CHECK_SECONDS = 30
+
 
 async def fleet_status():
     """The whole fleet, as a terminal table.
@@ -564,6 +624,9 @@ async def run():
 
     if PRINTING_ENABLED:
         asyncio.create_task(lipgloss_event_loop())
+
+    if IDLE_CLEAR_SECONDS:
+        asyncio.create_task(idle_clear_loop())
 
     global health_server, health_task
 
