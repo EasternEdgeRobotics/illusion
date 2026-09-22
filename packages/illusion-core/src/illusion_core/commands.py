@@ -10,6 +10,7 @@ would drag discord back into a package that claws and lipgloss depend on.
 
 import functools
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 
 from illusion_core import helpers as illusion_helpers
 from illusion_core.clients import ServiceUnavailable
@@ -22,6 +23,20 @@ class Rows:
 
     data: object
     exclude: list = field(default_factory=list)
+
+
+@dataclass
+class DuplicateScan:
+    """A DigiKey bag that has already been counted, so stock was left alone.
+
+    Carries the item's info for the caller to show in place of a stock change,
+    and the barcode so it can offer to count the bag anyway -- two bags off one
+    order line can carry identical labels.
+    """
+
+    barcode: str
+    message: str
+    info: object
 
 
 def reports_service_errors(handler):
@@ -230,6 +245,9 @@ class DB_Commands:
         if result.get("rejected"):
             return result["rejected"]
 
+        return self._increase_message(sku, amount, result)
+
+    def _increase_message(self, sku, amount, result):
         item = result["item"]
         unit = item["UNIT"] or "units"
 
@@ -396,11 +414,18 @@ class DB_Commands:
         return f"Updated {sku}: {changed_fields}"
 
     @reports_service_errors
-    async def handler_digikey_scan(self, barcode_text: str):
+    async def handler_digikey_scan(self, barcode_text: str, force=False):
+        """Count a DigiKey bag into stock, once.
+
+        force counts it even if this exact label has been scanned before.
+        """
         try:
-            data = await self.claws.digikey_scan(barcode_text)
+            data = await self.claws.digikey_scan(barcode_text, force=force)
         except ServiceUnavailable as e:
             return f"DigiKey lookup failed: {e}"
+
+        if data.get("duplicate"):
+            return await self._duplicate_scan(barcode_text, data["duplicate"])
 
         dkpn = data.get("DigiKeyPartNumber")
         quantity = data.get("Quantity") or 0
@@ -415,9 +440,20 @@ class DB_Commands:
             sku = existing["SKU"]
             if existing["TRACKING_MODE"] == "KANBAN":
                 return f"{sku} matched {dkpn}, but item is KANBAN tracked"
-            if quantity > 0:
-                return await self.handler_increase(sku, quantity)
-            return f"{sku} matched {dkpn}, but barcode had no quantity"
+            if quantity <= 0:
+                return f"{sku} matched {dkpn}, but barcode had no quantity"
+
+            result = await self.claws.increase(sku, float(quantity))
+
+            if result is None:
+                return f"Invalid sku: {sku}"
+
+            if result.get("rejected"):
+                return result["rejected"]
+
+            message = self._increase_message(sku, quantity, result)
+
+            return message + await self._record_scan(barcode_text, sku, dkpn, quantity)
 
         # New part: create a QUANTITY-tracked item pre-filled from DigiKey
         new_item = {
@@ -440,7 +476,44 @@ class DB_Commands:
         if created.get("rejected"):
             return created["rejected"]
 
-        return f"New item {created['sku']} created from {dkpn} with {quantity} on hand"
+        message = f"New item {created['sku']} created from {dkpn} with {quantity} on hand"
+
+        return message + await self._record_scan(barcode_text, created["sku"], dkpn, quantity)
+
+    async def _record_scan(self, barcode_text, sku, dkpn, quantity):
+        """Remember the bag, after its stock has landed. Returns a warning to
+        append if that failed, since the stock change itself did go through."""
+        try:
+            await self.claws.record_digikey_scan(barcode_text, sku, dkpn, quantity)
+        except ServiceUnavailable as e:
+            return f"\nStock updated, but the bag could not be recorded, so scanning it again will not be caught.\n{e}"
+
+        return ""
+
+    async def _duplicate_scan(self, barcode_text, previous):
+        sku = previous["SKU"]
+
+        try:
+            scanned_at = (
+                datetime.fromisoformat(previous["SCANNED_AT"])
+                .replace(tzinfo=timezone.utc)
+                .astimezone()
+                .strftime("%Y-%m-%d %H:%M")
+            )
+        except (TypeError, ValueError):
+            scanned_at = previous["SCANNED_AT"]
+
+        times = previous["TIMES_SCANNED"]
+        counted = "once" if times == 1 else f"{times} times"
+        quantity = illusion_helpers.format_quantity(previous["QUANTITY"] or 0)
+
+        message = (
+            f"This bag has already been counted {counted}, most recently {scanned_at} "
+            f"into {sku} ({quantity} units). Stock was not changed.\n"
+            f"If this really is a separate bag with an identical label, type `rescan` to count it."
+        )
+
+        return DuplicateScan(barcode_text, message, await self.handler_info(sku))
 
     async def handler_rename_preview_job(self, find, replace="", case_sensitive=False):
         """The whole preview result, for a caller that shows the list before

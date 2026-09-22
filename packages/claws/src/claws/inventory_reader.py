@@ -298,6 +298,28 @@ class SpreadsheetManager:
                 CREATE INDEX IF NOT EXISTS idx_vendors_sku
                     ON vendors (sku);
 
+                -- Every DigiKey bag whose stock has been counted, so the same
+                -- bag scanned twice is caught instead of counted twice. Not
+                -- unique on barcode: two bags off one order line can carry
+                -- identical labels, and counting the second is a deliberate
+                -- override that still gets its own row. Cascades so a deleted
+                -- item forgets its bags, and a reused sku inherits none.
+                CREATE TABLE IF NOT EXISTS digikey_scans (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    barcode TEXT NOT NULL,
+                    sku TEXT NOT NULL,
+                    digikey_part_number TEXT,
+                    quantity REAL,
+                    scanned_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+                    FOREIGN KEY (sku)
+                        REFERENCES items (sku)
+                        ON DELETE CASCADE
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_digikey_scans_barcode
+                    ON digikey_scans (barcode);
+
                 CREATE INDEX IF NOT EXISTS idx_items_name_nocase
                     ON items (name COLLATE NOCASE);
 
@@ -1514,6 +1536,58 @@ class SpreadsheetManager:
             ).fetchone()
             return self._row_to_dict(row) if row else None
 
+    def _normalize_barcode(self, barcode: str) -> str:
+        # The same label reaches claws with its separators either as raw
+        # control characters or as their visible stand-ins, depending on the
+        # scanner and what the kiosk did to it. Stored one way so both match.
+        return barcode.strip().replace("\x1d", "␝").replace("\x1e", "␞")
+
+    def get_digikey_scan(self, barcode: str) -> dict[str, Any] | None:
+        """The most recent time this bag was counted, or None if it never was."""
+        with self.lock:
+            row = self.connection.execute(
+                """
+                SELECT sku, digikey_part_number, quantity, scanned_at,
+                       COUNT(*) OVER () AS times_scanned
+                FROM digikey_scans
+                WHERE barcode = ?
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (self._normalize_barcode(barcode),),
+            ).fetchone()
+
+        if row is None:
+            return None
+
+        return {
+            "SKU": row["sku"],
+            "DIGIKEY_PART_NUMBER": row["digikey_part_number"],
+            "QUANTITY": row["quantity"],
+            "SCANNED_AT": row["scanned_at"],
+            "TIMES_SCANNED": row["times_scanned"],
+        }
+
+    def record_digikey_scan(self, barcode: str, sku: str, dkpn: str | None, quantity: float | None) -> bool:
+        with self.lock:
+            if not self.validate_sku(sku):
+                return False
+
+            self.connection.execute(
+                """
+                INSERT INTO digikey_scans (
+                    barcode,
+                    sku,
+                    digikey_part_number,
+                    quantity
+                )
+                VALUES (?, ?, ?, ?)
+                """,
+                (self._normalize_barcode(barcode), sku, dkpn, quantity),
+            )
+            self.connection.commit()
+
+            return True
 
     def save(self) -> None:
         with self.lock:

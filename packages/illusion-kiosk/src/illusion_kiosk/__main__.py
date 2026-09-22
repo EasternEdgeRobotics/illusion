@@ -23,7 +23,7 @@ except ImportError:
 from illusion_core import config as illusion_config
 from illusion_core import helpers as illusion_helpers
 from illusion_core.clients import ClawsClient, LipglossClient, ServiceUnavailable
-from illusion_core.commands import DB_Commands, Rows
+from illusion_core.commands import DB_Commands, DuplicateScan, Rows
 from illusion_core import fleet
 
 illusion_version = version("illusion-kiosk")
@@ -54,6 +54,9 @@ def render(result):
     """Terminal rendering: strings pass through, Rows becomes a table."""
     if isinstance(result, Rows):
         return illusion_helpers.make_table(result.data, exclude=result.exclude)
+
+    if isinstance(result, DuplicateScan):
+        return f"{render(result.info)}\n{result.message}"
 
     return result
 
@@ -148,6 +151,11 @@ async def command_help():
             "USAGE": "set <sku> <quantity>",
             "DESCRIPTION": "Set item stock",
         },
+        {
+            "COMMAND": "rescan",
+            "USAGE": "rescan",
+            "DESCRIPTION": "Count a DigiKey bag that was just refused as already scanned",
+        },
     ]
 
     if PRINTING_ENABLED:
@@ -217,6 +225,11 @@ async def terminal_loop():
     print(f"illusion {illusion_version}")
     print("ready")
 
+    # The barcode of a DigiKey bag refused as a repeat by the command just
+    # before this one. Only ever the immediately previous command, so a stray
+    # `rescan` typed later cannot count some long forgotten bag.
+    duplicate_barcode = None
+
     while not shutdown_event.is_set():
         try:
             text = await asyncio.to_thread(input, "> ")
@@ -236,6 +249,8 @@ async def terminal_loop():
         parts = text.split(maxsplit=2) # Make sure to update this if commands w/ 3+ fields are added
         command = parts[0].lower()
         response_message = None
+
+        pending_rescan, duplicate_barcode = duplicate_barcode, None
 
         try:
             if command == "exit" and len(parts) >= 1:
@@ -288,7 +303,17 @@ async def terminal_loop():
             elif parts[0].startswith("EER-") and len(parts) >= 1: # Basic bar code scanner support
                 response_message = await command_handler.handler_decrease(parts[0])
             elif text.startswith("[)>") or (text.isdigit() and len(text) > 8): # Digikey data matrix
-                response_message = await command_handler.handler_digikey_scan(text.strip().replace("|", "\u241d"))
+                result = await command_handler.handler_digikey_scan(text.strip().replace("|", "\u241d"))
+
+                if isinstance(result, DuplicateScan):
+                    duplicate_barcode = result.barcode
+
+                response_message = render(result)
+            elif command == "rescan" and len(parts) == 1:
+                if pending_rescan is None:
+                    response_message = "Nothing to rescan. `rescan` only works right after a DigiKey bag is refused as already scanned."
+                else:
+                    response_message = render(await command_handler.handler_digikey_scan(pending_rescan, force=True))
             elif command == "resolve" and len(parts) >= 2:
                 response_message = await command_handler.handler_resolve(parts[1])
             elif command == "delete" and len(parts) >= 2:
