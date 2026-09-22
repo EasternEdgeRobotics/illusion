@@ -536,15 +536,20 @@ class DB_Commands:
         return Rows(results, exclude)
 
     @reports_service_errors
-    async def handler_add_tag(self, sku: str, tag: str):
+    async def handler_add_tag(self, sku: str, tags: str):
+        """Adds every tag in a comma-separated list, one at a time.
+
+        Comma-separated rather than one call per tag because that is how
+        tags are typed everywhere else in the bot (add_item's tags field,
+        bulk_rename_tag's autocomplete): the split is what used to be the
+        "no commas" rule on a single tag, just read the other way around.
+        """
         sku = illusion_helpers.clean_sku(sku)
-        tag = tag.strip()
 
-        if not tag:
+        requested = [tag.strip() for tag in tags.split(",") if tag.strip()]
+
+        if not requested:
             return "Tag cannot be empty."
-
-        if "," in tag:
-            return "Tag cannot contain commas."
 
         existing_tags = await self.claws.item_tags(sku)
 
@@ -553,12 +558,36 @@ class DB_Commands:
 
         existing_keys = {existing_tag.casefold() for existing_tag in existing_tags}
 
-        if tag.casefold() in existing_keys:
-            return f"{sku} already has tag: {tag}"
+        added = []
+        already_had = []
+        seen = set()
 
-        await self.claws.add_tag(sku, tag)
+        for tag in requested:
+            key = tag.casefold()
 
-        return f"Added tag `{tag}` to {sku}"
+            if key in seen:
+                continue
+
+            seen.add(key)
+
+            if key in existing_keys:
+                already_had.append(tag)
+                continue
+
+            await self.claws.add_tag(sku, tag)
+            existing_keys.add(key)
+            added.append(tag)
+
+        parts = []
+
+        if added:
+            noun = "tag" if len(added) == 1 else "tags"
+            parts.append(f"Added {noun} {', '.join(f'`{tag}`' for tag in added)} to {sku}")
+
+        if already_had:
+            parts.append(f"{sku} already had {', '.join(f'`{tag}`' for tag in already_had)}")
+
+        return "\n".join(parts)
 
     @reports_service_errors
     async def handler_get_locations(self):

@@ -297,7 +297,12 @@ async def sku_autocomplete(interaction: discord.Interaction, current: str):
 
 
 async def tag_autocomplete(interaction: discord.Interaction, current: str):
-    """Suggest tags that already exist, so we stop growing near duplicates."""
+    """Suggest tags that already exist, so we stop growing near duplicates.
+
+    No "(count)" suffix on the label: Discord fills the field with whatever
+    the picked choice's name says, not its value, so a count left in the
+    label is what ends up typed into the field.
+    """
     try:
         tags = await claws.tags()
     except ServiceUnavailable:
@@ -312,9 +317,7 @@ async def tag_autocomplete(interaction: discord.Interaction, current: str):
         if wanted and wanted not in name.casefold():
             continue
 
-        choices.append(
-            app_commands.Choice(name=f"{name} ({tag['COUNT']})", value=name)
-        )
+        choices.append(app_commands.Choice(name=name, value=name))
 
         if len(choices) == AUTOCOMPLETE_LIMIT:
             break
@@ -975,11 +978,11 @@ async def get_tags(interaction: discord.Interaction):
 
     await send_result(interaction, await command_handler.handler_get_tags())
 
-@bot.tree.command(name="add_tag", description="Add a tag to an item")
-@app_commands.describe(sku="Item SKU", tag="Tag to add")
-@app_commands.autocomplete(sku=sku_autocomplete, tag=tag_autocomplete)
-async def add_tag(interaction: discord.Interaction, sku: str, tag: str):
-    response_message = await command_handler.handler_add_tag(sku, tag)
+@bot.tree.command(name="add_tag", description="Add one or more tags to an item")
+@app_commands.describe(sku="Item SKU", tags="Tag to add, or several separated by commas")
+@app_commands.autocomplete(sku=sku_autocomplete, tags=tags_autocomplete)
+async def add_tag(interaction: discord.Interaction, sku: str, tags: str):
+    response_message = await command_handler.handler_add_tag(sku, tags)
     await interaction.response.send_message(response_message)
 
 @bot.tree.command(name="get_locations", description="List every location in use")
