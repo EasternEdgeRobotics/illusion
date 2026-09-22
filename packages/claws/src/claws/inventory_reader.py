@@ -95,7 +95,7 @@ class SpreadsheetManager:
         self.sku_padding = 6
 
         self.default_headers = ["SKU", "NAME", "LOCATION", "ORDER_QUANTITY", "LOW", "LOW_THREAD_ID",
-                                "TRACKING_MODE", "QUANTITY_ON_HAND", "LOW_THRESHOLD", "UNIT", "DECREASE_AMOUNT",
+                                "TRACKING_MODE", "QUANTITY_ON_HAND", "LOW_THRESHOLD", "DECREASE_AMOUNT",
                                 "LINK_1", "VENDOR_1", "LINK_2", "VENDOR_2", "LINK_3", "VENDOR_3",
                                 "LINK_4", "VENDOR_4", "LINK_5", "VENDOR_5", "DIGIKEY_PART_NUMBER",
                                 "TAGS", "NOTES",
@@ -165,6 +165,11 @@ class SpreadsheetManager:
         if "priority" in existing_columns:
             self.connection.execute(
                 "ALTER TABLE items DROP COLUMN priority"
+            )
+
+        if "unit" in existing_columns:
+            self.connection.execute(
+                "ALTER TABLE items DROP COLUMN unit"
             )
 
         if "location" not in existing_columns:
@@ -256,7 +261,6 @@ class SpreadsheetManager:
                     tracking_mode TEXT NOT NULL DEFAULT 'KANBAN',
                     quantity_on_hand REAL,
                     low_threshold REAL,
-                    unit TEXT,
                     decrease_amount REAL NOT NULL DEFAULT 1.0,
 
                     location TEXT,
@@ -420,7 +424,6 @@ class SpreadsheetManager:
             "TRACKING_MODE": row["tracking_mode"],
             "QUANTITY_ON_HAND": row["quantity_on_hand"],
             "LOW_THRESHOLD": row["low_threshold"],
-            "UNIT": row["unit"],
             "DECREASE_AMOUNT": row["decrease_amount"],
             "LOW_THREAD_ID": row["low_thread_id"],
             "DIGIKEY_PART_NUMBER": row["digikey_part_number"],
@@ -618,7 +621,7 @@ class SpreadsheetManager:
         with self.lock:
             rows = self.connection.execute(
                 """
-                SELECT sku, name, location, order_quantity, low, tracking_mode, quantity_on_hand, low_threshold, unit, decrease_amount, low_thread_id, digikey_part_number, tags, notes
+                SELECT sku, name, location, order_quantity, low, tracking_mode, quantity_on_hand, low_threshold, decrease_amount, low_thread_id, digikey_part_number, tags, notes
                 FROM items
                 WHERE location = ? COLLATE NOCASE
                 OR location LIKE ? ESCAPE '\\'
@@ -706,7 +709,6 @@ class SpreadsheetManager:
                     tracking_mode,
                     quantity_on_hand,
                     low_threshold,
-                    unit,
                     decrease_amount,
                     low_thread_id,
                     digikey_part_number,
@@ -751,7 +753,7 @@ class SpreadsheetManager:
         with self.lock:
             rows = self.connection.execute(
                 """
-                SELECT sku, name, location, order_quantity, low, tracking_mode, quantity_on_hand, low_threshold, unit, decrease_amount, low_thread_id, digikey_part_number, tags, notes
+                SELECT sku, name, location, order_quantity, low, tracking_mode, quantity_on_hand, low_threshold, decrease_amount, low_thread_id, digikey_part_number, tags, notes
                 FROM items
                 ORDER BY sku
                 """
@@ -775,7 +777,7 @@ class SpreadsheetManager:
         with self.lock:
             row = self.connection.execute(
                 """
-                SELECT sku, name, location, order_quantity, low, tracking_mode, quantity_on_hand, low_threshold, unit, decrease_amount, low_thread_id, digikey_part_number, tags, notes
+                SELECT sku, name, location, order_quantity, low, tracking_mode, quantity_on_hand, low_threshold, decrease_amount, low_thread_id, digikey_part_number, tags, notes
                 FROM items
                 WHERE sku = ?
                 """,
@@ -802,7 +804,6 @@ class SpreadsheetManager:
                 item_data.get("QUANTITY_ON_HAND")
             )
             low_threshold = self._normalize_float(item_data.get("LOW_THRESHOLD"))
-            unit = item_data.get("UNIT")
             decrease_amount = self._normalize_float(
                 item_data.get("DECREASE_AMOUNT"),
                 1.0,
@@ -826,14 +827,13 @@ class SpreadsheetManager:
                     tracking_mode,
                     quantity_on_hand,
                     low_threshold,
-                    unit,
                     decrease_amount,
                     digikey_part_number,
                     location,
                     tags,
                     notes
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     new_sku,
@@ -843,7 +843,6 @@ class SpreadsheetManager:
                     tracking_mode,
                     quantity_on_hand,
                     low_threshold,
-                    unit,
                     decrease_amount,
                     digikey_part_number,
                     location,
@@ -893,7 +892,7 @@ class SpreadsheetManager:
                 if header not in self.default_headers:
                     raise ValueError(f"Header '{header}' does not exist.")
 
-                if header in {"NAME", "ORDER_QUANTITY", "LOW", "TRACKING_MODE", "QUANTITY_ON_HAND", "LOW_THRESHOLD", "UNIT", "DECREASE_AMOUNT", "LOW_THREAD_ID", "DIGIKEY_PART_NUMBER", "LOCATION", "TAGS", "NOTES"}:
+                if header in {"NAME", "ORDER_QUANTITY", "LOW", "TRACKING_MODE", "QUANTITY_ON_HAND", "LOW_THRESHOLD", "DECREASE_AMOUNT", "LOW_THREAD_ID", "DIGIKEY_PART_NUMBER", "LOCATION", "TAGS", "NOTES"}:
                     item_updates[header] = value
                     continue
 
@@ -914,7 +913,6 @@ class SpreadsheetManager:
                     "TRACKING_MODE": "tracking_mode",
                     "QUANTITY_ON_HAND": "quantity_on_hand",
                     "LOW_THRESHOLD": "low_threshold",
-                    "UNIT": "unit",
                     "DECREASE_AMOUNT": "decrease_amount",
                     "LOW_THREAD_ID": "low_thread_id",
                     "DIGIKEY_PART_NUMBER": "digikey_part_number",
@@ -1104,7 +1102,6 @@ class SpreadsheetManager:
                     tracking_mode,
                     quantity_on_hand,
                     low_threshold,
-                    unit,
                     decrease_amount,
                     low_thread_id,
                     digikey_part_number,
@@ -1438,7 +1435,7 @@ class SpreadsheetManager:
         with self.lock:
             rows = self.connection.execute(
                 """
-                SELECT sku, name, location, order_quantity, low, tracking_mode, quantity_on_hand, low_threshold, unit, decrease_amount, low_thread_id, digikey_part_number, tags, notes
+                SELECT sku, name, location, order_quantity, low, tracking_mode, quantity_on_hand, low_threshold, decrease_amount, low_thread_id, digikey_part_number, tags, notes
                 FROM items
                 """
             ).fetchall()
