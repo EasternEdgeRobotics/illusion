@@ -322,6 +322,59 @@ async def tag_autocomplete(interaction: discord.Interaction, current: str):
     return choices
 
 
+async def tags_autocomplete(interaction: discord.Interaction, current: str):
+    """Suggest a next tag for a comma-separated tags field.
+
+    Picking a choice replaces the whole field in Discord, not just what was
+    being typed, so unlike tag_autocomplete this rebuilds the value as
+    everything already typed plus the matched tag -- otherwise choosing a tag
+    partway through a list would wipe out the ones typed before it. Only the
+    text after the last comma is treated as the search term, and a tag
+    already in that prefix is not suggested again.
+    """
+    prefix, _, partial = current.rpartition(",")
+    prefix = prefix.strip()
+    partial = partial.strip()
+
+    try:
+        tags = await claws.tags()
+    except ServiceUnavailable:
+        return []
+
+    chosen = {tag.strip().casefold() for tag in prefix.split(",") if tag.strip()}
+    wanted = partial.casefold()
+    choices = []
+
+    for tag in tags:
+        name = tag["TAG"]
+
+        if name.casefold() in chosen:
+            continue
+
+        if wanted and wanted not in name.casefold():
+            continue
+
+        value = f"{prefix}, {name}" if prefix else name
+
+        # A choice's value has the same 100 character cap Discord puts on the
+        # label, and unlike a label this cannot just be truncated with an
+        # ellipsis without corrupting a tag further down the list
+        if len(value) > CHOICE_LABEL_LIMIT:
+            continue
+
+        # No "(count)" suffix here unlike tag_autocomplete: Discord fills the
+        # field with the displayed name on pick, not the value, so a count
+        # left in the label ends up typed into the field. Fine to leave once
+        # this is the only tag going in, but a second tag added after without
+        # first deleting it bakes the count into the tags this item gets.
+        choices.append(app_commands.Choice(name=value, value=value))
+
+        if len(choices) == AUTOCOMPLETE_LIMIT:
+            break
+
+    return choices
+
+
 async def location_autocomplete(interaction: discord.Interaction, current: str):
     """Suggest locations, so a shelf only ever ends up with one name.
 
@@ -470,7 +523,7 @@ async def delete(interaction: discord.Interaction, sku: str):
                        location="Where the item lives, ex: Shelf 5A",
                        tags="Comma-separated tags", notes="Notes about this item",
                        )
-@app_commands.autocomplete(location=location_autocomplete)
+@app_commands.autocomplete(location=location_autocomplete, tags=tags_autocomplete)
 
 async def add_item(interaction: discord.Interaction, item_name: str,
                    quantity: float, order_quantity: float, low_threshold: float, unit: str,
@@ -501,7 +554,7 @@ async def add_item(interaction: discord.Interaction, item_name: str,
                        location="Where the item lives, ex: Shelf 5A",
                        tags="Comma-separated tags", notes="Notes about this item",
                        )
-@app_commands.autocomplete(location=location_autocomplete)
+@app_commands.autocomplete(location=location_autocomplete, tags=tags_autocomplete)
 
 async def add_kanban(interaction: discord.Interaction, item_name: str, order_quantity: float,
                      location: str | None = None,
@@ -532,7 +585,7 @@ async def add_kanban(interaction: discord.Interaction, item_name: str, order_qua
                        location="Where the item lives, ex: Shelf 5A",
                        tags="Comma-separated tags", notes="Notes about this item",
                        )
-@app_commands.autocomplete(location=location_autocomplete)
+@app_commands.autocomplete(location=location_autocomplete, tags=tags_autocomplete)
 
 async def add_hybrid(interaction: discord.Interaction, item_name: str,
                    quantity: float, order_quantity: float, low_threshold: float, unit: str, decrease_amount: float,
@@ -561,7 +614,7 @@ async def add_hybrid(interaction: discord.Interaction, item_name: str,
                        location="Where the item lives, ex: Shelf 5A",
                        tags="Comma-separated tags", notes="Notes about this item",
                        )
-@app_commands.autocomplete(location=location_autocomplete)
+@app_commands.autocomplete(location=location_autocomplete, tags=tags_autocomplete)
 
 async def add_with_dkpn(interaction: discord.Interaction, digikey_part_number: str,
                    quantity: float, order_quantity: float, low_threshold: float, unit: str, item_name: str | None = None,
@@ -1566,7 +1619,7 @@ async def printer_info(interaction: discord.Interaction):
                        location="Where the item lives, ex: Shelf 5A",
                        tags="Comma-separated tags", notes="Notes about this item",
                        )
-@app_commands.autocomplete(sku=sku_autocomplete, location=location_autocomplete)
+@app_commands.autocomplete(sku=sku_autocomplete, location=location_autocomplete, tags=tags_autocomplete)
 async def update_item(interaction: discord.Interaction, sku: str,
                       item_name: str | None = None, location: str | None = None,
                       quantity: str | None = None, order_quantity: str | None = None,
