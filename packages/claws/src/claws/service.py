@@ -78,6 +78,15 @@ class LowThread(BaseModel):
 
 class ScanRequest(BaseModel):
     barcode: str
+    # Look the bag up even if it has been counted before
+    force: bool = False
+
+
+class ScanRecord(BaseModel):
+    barcode: str
+    sku: str
+    digikey_part_number: str | None = None
+    quantity: float | None = None
 
 
 class Registration(BaseModel):
@@ -647,12 +656,33 @@ def create_app(config_path="./claws.yaml"):
         if digikey is None:
             raise HTTPException(status_code=503, detail="DigiKey support is not enabled")
 
+        # Checked before DigiKey is asked, so a repeat scan costs no API call
+        # and is still caught while DigiKey is down
+        if not request.force:
+            previous = inventory.get_digikey_scan(request.barcode)
+
+            if previous is not None:
+                return {"duplicate": previous}
+
         try:
             data = await asyncio.to_thread(digikey.lookup_barcode, request.barcode)
         except Exception as e:
             raise HTTPException(status_code=502, detail=f"DigiKey lookup failed: {e}")
 
         return data
+
+    # Separate from /digikey/scan because the stock change happens in between,
+    # through the ordinary item routes. A bag is only recorded once its stock
+    # has actually landed, so a scan that failed can simply be scanned again.
+    @app.post("/digikey/scans", dependencies=auth)
+    async def record_digikey_scan(request: ScanRecord):
+        _item_or_404(request.sku)
+
+        inventory.record_digikey_scan(
+            request.barcode, request.sku, request.digikey_part_number, request.quantity
+        )
+
+        return {"recorded": True}
 
     @app.get("/digikey/part/{part_number:path}", dependencies=auth)
     async def digikey_part(part_number: str):

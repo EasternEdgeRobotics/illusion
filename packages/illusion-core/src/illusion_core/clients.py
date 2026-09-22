@@ -344,5 +344,15 @@ class ClawsClient(BaseClient):
     async def digikey_part(self, part_number):
         return await self.get(f"/digikey/part/{part_number}")
 
-    async def digikey_scan(self, barcode):
-        return await self.post("/digikey/scan", json={"barcode": barcode})
+    async def digikey_scan(self, barcode, force=False):
+        """DigiKey's data for the barcode, or {"duplicate": ...} describing the
+        last time this bag was counted, unless force is set."""
+        return await self.post("/digikey/scan", json={"barcode": barcode, "force": force})
+
+    async def record_digikey_scan(self, barcode, sku, dkpn, quantity):
+        return await self.post("/digikey/scans", json={
+            "barcode": barcode,
+            "sku": sku,
+            "digikey_part_number": dkpn,
+            "quantity": quantity,
+        })
