@@ -17,6 +17,9 @@ MAX_EMBED_JOBS = 20
 # Discord maxes out at 25 embeds, anything higher gets rejected
 MAX_EMBED_FIELDS = 25
 
+# Rows per page for a paginated list embed, small enough to page through comfortably
+PAGE_SIZE = 10
+
 QUEUE_FIELD_NAMES = {
     "JOB_ID": "Job",
     "DESCRIPTION": "Label",
@@ -104,10 +107,19 @@ def make_vendor_buttons(item):
     return view
 
 
-def make_embed(data, exclude=None, field_names=None, title=None, description=None, colour=None, row_name=None, vertical=None):
+def total_pages(rows, page_size=PAGE_SIZE):
+    """How many pages `rows` spans in a list embed, at `page_size` rows per page."""
+    if not rows or isinstance(rows, dict):
+        return 1
+
+    return -(-len(rows) // page_size)
+
+
+def make_embed(data, exclude=None, field_names=None, title=None, description=None, colour=None, row_name=None, vertical=None, page=0):
     # vertical=None lays a single row out one field per column and anything longer
     # as a field per row, pass True or False to force one or the other
     # row_name names each of those fields after that column, instead of "Result 1"
+    # page picks which PAGE_SIZE-sized slice of a multi-row list embed to render
     missing = "N/A"
     inline = False
 
@@ -189,15 +201,11 @@ def make_embed(data, exclude=None, field_names=None, title=None, description=Non
         embed.description = embed.description or "No displayable fields."
         return embed
 
-    hidden = len(rows) - MAX_EMBED_FIELDS
+    pages = total_pages(rows)
+    start = page * PAGE_SIZE
+    window = rows[start:start + PAGE_SIZE]
 
-    if hidden > 0:
-        rows = rows[:MAX_EMBED_FIELDS]
-        embed.description = "\n".join(
-            filter(None, [embed.description, f"Only the first {MAX_EMBED_FIELDS} are listed, {hidden} more behind them."])
-        )
-
-    for index, row in enumerate(rows, start=1):
+    for index, row in enumerate(window, start=start + 1):
         lines = []
 
         for column in columns:
@@ -216,6 +224,9 @@ def make_embed(data, exclude=None, field_names=None, title=None, description=Non
             value="\n".join(lines),
             inline=False,
         )
+
+    if pages > 1:
+        embed.set_footer(text=f"Page {page + 1} of {pages}")
 
     return embed
 

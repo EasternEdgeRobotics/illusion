@@ -146,7 +146,7 @@ class DB_Commands:
 
     @reports_service_errors
     async def handler_search(self, name: str):
-        results = await self.claws.search(name, limit=10)
+        results = await self.claws.search(name, limit=50)
 
         if not results:
             return f"No items found matching: {name}"

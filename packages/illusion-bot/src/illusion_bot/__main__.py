@@ -70,14 +70,87 @@ def render(result):
     return result
 
 
+# How long the pager buttons stay live. Nothing is at stake in paging through a
+# list, so this is only about not leaving dead buttons cluttering old messages.
+RESULTS_PAGER_TIMEOUT = 300
+
+
+class ResultsPager(discord.ui.View):
+    """Prev/Next paging for a list embed with more rows than fit on one page."""
+
+    def __init__(self, requester, rows, exclude):
+        super().__init__(timeout=RESULTS_PAGER_TIMEOUT)
+
+        self.requester = requester
+        self.rows = rows
+        self.exclude = exclude
+        self.page = 0
+        self.message = None
+
+        self._sync_buttons()
+
+    def embed(self):
+        return presentation.make_embed(self.rows, exclude=self.exclude, page=self.page)
+
+    def _sync_buttons(self):
+        self.previous_page.disabled = self.page == 0
+        self.next_page.disabled = self.page >= presentation.total_pages(self.rows) - 1
+
+    async def interaction_check(self, interaction: discord.Interaction):
+        # A results page sitting in a busy channel is not somebody else's to page through
+        if interaction.user.id == self.requester.id:
+            return True
+
+        await interaction.response.send_message(
+            "That result list is someone else's, run the command yourself to page through your own.",
+            ephemeral=True,
+        )
+
+        return False
+
+    async def on_timeout(self):
+        if self.message is None:
+            return
+
+        for child in self.children:
+            child.disabled = True
+
+        try:
+            await self.message.edit(view=self)
+        except discord.HTTPException:
+            pass
+
+    @discord.ui.button(label="◀ Prev", style=discord.ButtonStyle.secondary)
+    async def previous_page(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.page -= 1
+        self._sync_buttons()
+        await interaction.response.edit_message(embed=self.embed(), view=self)
+
+    @discord.ui.button(label="Next ▶", style=discord.ButtonStyle.secondary)
+    async def next_page(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.page += 1
+        self._sync_buttons()
+        await interaction.response.edit_message(embed=self.embed(), view=self)
+
+
 async def send_result(interaction, result, view=None):
     """Reply with whatever the handler produced, embed or plain text.
 
     Every handler can hand back a string instead of Rows: no search results, an
     invalid sku, or a service it could not reach. Sending that as embed= is what
     breaks, so the choice is made here once rather than at each call site.
+
+    A Rows result with more rows than fit on one page gets a ResultsPager
+    instead of the caller's view, unless the caller already supplied one.
     """
-    result = render(result)
+    pager = None
+
+    if view is None and isinstance(result, Rows) and presentation.total_pages(result.data) > 1:
+        pager = ResultsPager(interaction.user, result.data, result.exclude)
+        view = pager
+        result = pager.embed()
+    else:
+        result = render(result)
 
     if isinstance(result, discord.Embed):
         kwargs = {"embed": result}
@@ -90,9 +163,13 @@ async def send_result(interaction, result, view=None):
     # Deferring already used up the initial response, so which of the two to
     # call depends on whether the command deferred
     if interaction.response.is_done():
-        await interaction.followup.send(**kwargs)
+        message = await interaction.followup.send(**kwargs)
     else:
         await interaction.response.send_message(**kwargs)
+        message = await interaction.original_response() if pager is not None else None
+
+    if pager is not None:
+        pager.message = message
 
 
 async def create_low_thread(sku, item=None):
