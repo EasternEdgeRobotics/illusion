@@ -546,7 +546,7 @@ async def add_item(interaction: discord.Interaction, item_name: str,
 
     await interaction.response.send_message(response_message)
 
-@bot.tree.command(name="add_kanban", description="Add item to inventory w/ kanban tracking")
+@bot.tree.command(name="add_item_kanban", description="Add item to inventory w/ kanban tracking")
 @app_commands.describe(item_name="Item Name",
                        order_quantity="Number of units to order when stock low", digikey_part_number="Digikey Part Number",
                        vendor_1="Source 1 for Item", link_1="Source 1 Purchase Link",
@@ -559,7 +559,7 @@ async def add_item(interaction: discord.Interaction, item_name: str,
                        )
 @app_commands.autocomplete(location=location_autocomplete, tags=tags_autocomplete)
 
-async def add_kanban(interaction: discord.Interaction, item_name: str, order_quantity: float,
+async def add_item_kanban(interaction: discord.Interaction, item_name: str, order_quantity: float,
                      location: str | None = None,
                      digikey_part_number: str | None = None, tags: str | None = None, notes: str | None = None,
                    vendor_1: str | None = None, link_1: str | None = None, vendor_2: str | None = None, link_2: str | None = None,
@@ -576,7 +576,7 @@ async def add_kanban(interaction: discord.Interaction, item_name: str, order_qua
 
     await interaction.response.send_message(response_message)
 
-@bot.tree.command(name="add_hybrid", description="Add item to inventory w/ hybrid tracking")
+@bot.tree.command(name="add_item_hybrid", description="Add item to inventory w/ hybrid tracking")
 @app_commands.describe(item_name="Item Name",
                        order_quantity="Number of units to order when stock low", unit="Unit name", digikey_part_number="Digikey Part Number",
                        quantity="Number of units on hand", low_threshold="Minimum Stock", decrease_amount="Amount to decrease by",
@@ -590,7 +590,7 @@ async def add_kanban(interaction: discord.Interaction, item_name: str, order_qua
                        )
 @app_commands.autocomplete(location=location_autocomplete, tags=tags_autocomplete)
 
-async def add_hybrid(interaction: discord.Interaction, item_name: str,
+async def add_item_hybrid(interaction: discord.Interaction, item_name: str,
                    quantity: float, order_quantity: float, low_threshold: float, unit: str, decrease_amount: float,
                    location: str | None = None,
                    digikey_part_number: str | None = None, tags: str | None = None, notes: str | None = None,
@@ -609,7 +609,7 @@ async def add_hybrid(interaction: discord.Interaction, item_name: str,
 
     await interaction.response.send_message(response_message)
 
-@bot.tree.command(name="add_with_dkpn", description="Add item to inventory w/ per item tracking, getting info using a Digikey part number")
+@bot.tree.command(name="add_item_with_dkpn", description="Add item to inventory w/ per item tracking, getting info using a Digikey part number")
 @app_commands.describe(item_name="Item Name",
                        order_quantity="Number of units to order when stock low",
                        unit="Unit name", digikey_part_number="Digikey Part Number",
@@ -619,7 +619,7 @@ async def add_hybrid(interaction: discord.Interaction, item_name: str,
                        )
 @app_commands.autocomplete(location=location_autocomplete, tags=tags_autocomplete)
 
-async def add_with_dkpn(interaction: discord.Interaction, digikey_part_number: str,
+async def add_item_with_dkpn(interaction: discord.Interaction, digikey_part_number: str,
                    quantity: float, order_quantity: float, low_threshold: float, unit: str, item_name: str | None = None,
                    location: str | None = None, tags: str | None = None, notes: str | None = None):
 
