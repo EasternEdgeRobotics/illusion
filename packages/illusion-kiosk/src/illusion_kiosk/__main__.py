@@ -558,6 +558,10 @@ try:
         required += ["kiosk.lipgloss.url", "kiosk.lipgloss.token"]
 
     illusion_config.require(config, required, source=CONFIG_PATH)
+
+    illusion_config.add_defaults(config, CONFIG_PATH, {
+        "kiosk.terminal.idle_clear_minutes": 30,
+    })
 except illusion_config.ConfigError as e:
     print(e)
     raise SystemExit(1)
