@@ -442,6 +442,27 @@ class DB_Commands:
 
         return f"New item {created['sku']} created from {dkpn} with {quantity} on hand"
 
+    async def handler_rename_preview_job(self, find, replace="", case_sensitive=False):
+        """The whole preview result, for a caller that shows the list before
+        anything is written. Undecorated like handler_print_job: a Discord
+        preview needs to tell "nothing to reach" apart from "nothing matched"
+        rather than have both collapse into the same string."""
+        find = (find or "").strip()
+
+        if not find:
+            return {"rejected": "Give some text to find in item names."}
+
+        return await self.claws.rename_preview(find, replace or "", case_sensitive)
+
+    async def handler_rename_apply_job(self, find, replace="", case_sensitive=False):
+        """The whole apply result, run fresh rather than off a stored preview."""
+        find = (find or "").strip()
+
+        if not find:
+            return {"rejected": "Give some text to find in item names."}
+
+        return await self.claws.rename_apply(find, replace or "", case_sensitive)
+
     @reports_service_errors
     async def handler_get_tags(self):
         tags = await self.claws.tags()

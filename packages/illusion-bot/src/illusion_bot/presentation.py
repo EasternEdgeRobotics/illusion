@@ -258,6 +258,54 @@ def label_embed(title, description, style, sku=None, line_1=None, line_2=None,
     return embed
 
 
+# Kept well under Discord's 1024-char field limit and its 25-field cap, same
+# spirit as MAX_EMBED_JOBS: a rename big enough to blow past this is exactly
+# the kind that most needs a careful look before confirming, not a wall of text
+MAX_RENAME_LINES = 15
+RENAME_LINE_LIMIT = 100
+
+
+def _rename_line(change):
+    line = f"`{change['SKU']}` {change['OLD_NAME']} -> {change['NEW_NAME']}"
+
+    if len(line) > RENAME_LINE_LIMIT:
+        line = f"{line[:RENAME_LINE_LIMIT - 1]}…"
+
+    return line
+
+
+def rename_embed(title, description, changes=None, urgent=False, verb="would change"):
+    """A find/replace preview or result: the title and description, plus as
+    many of the affected items as comfortably fit.
+
+    verb switches the field heading between the preview ("3 items would
+    change") and the outcome ("3 items were renamed"), so it reads right on
+    both sides of the confirm button.
+    """
+    embed = discord.Embed(
+        title=title,
+        description=description,
+        color=ALERT_COLOUR if urgent else EMBED_COLOUR,
+    )
+
+    if changes:
+        shown = changes[:MAX_RENAME_LINES]
+        lines = [_rename_line(change) for change in shown]
+
+        hidden = len(changes) - len(shown)
+
+        if hidden > 0:
+            lines.append(f"...and {hidden} more")
+
+        embed.add_field(
+            name=f"{len(changes)} item{'s' if len(changes) != 1 else ''} {verb}",
+            value="\n".join(lines),
+            inline=False,
+        )
+
+    return embed
+
+
 def notice_embed(title, description, urgent=False):
     """A plain title and description embed, for print updates that arent a list of jobs."""
     return discord.Embed(

@@ -520,6 +520,162 @@ async def search(interaction: discord.Interaction, name: str):
 
     await send_result(interaction, await command_handler.handler_search(name))
 
+# How long the rename buttons stay live. Same span as a print preview: long
+# enough to read the whole list, short enough that a stale preview cannot be
+# committed against a catalogue that has moved on.
+RENAME_BUTTON_TIMEOUT = 300
+
+
+@dataclasses.dataclass
+class RenameJob:
+    """A find/replace the command has worked out is worth previewing.
+
+    Held onto so the Rename button re-runs exactly this find/replace rather
+    than trusting the list of skus a preview showed minutes earlier -- an item
+    added, edited, or deleted in the meantime is picked up correctly because
+    the match is redone at confirm time, not replayed from what was on screen.
+    """
+
+    find: str
+    replace: str = ""
+    case_sensitive: bool = False
+
+
+class ConfirmRename(discord.ui.View):
+    """The preview step: the proposed renames are on screen, nothing is written yet."""
+
+    def __init__(self, requester, job, changes):
+        super().__init__(timeout=RENAME_BUTTON_TIMEOUT)
+
+        self.requester = requester
+        self.job = job
+        self.changes = changes
+        self.message = None
+
+    async def interaction_check(self, interaction: discord.Interaction):
+        # A preview sitting in a busy channel is not somebody else's to commit
+        # a batch of renames to
+        if interaction.user.id == self.requester.id:
+            return True
+
+        await interaction.response.send_message(
+            "That preview is someone else's, run /bulk_rename to get your own.", ephemeral=True
+        )
+
+        return False
+
+    async def on_timeout(self):
+        if self.message is None:
+            return
+
+        embed = presentation.rename_embed(
+            title="Rename Preview",
+            description="This preview expired, nothing was renamed.",
+            changes=self.changes,
+        )
+
+        try:
+            await self.message.edit(embed=embed, view=None)
+        except discord.HTTPException:
+            pass
+
+    @discord.ui.button(label="Rename", style=discord.ButtonStyle.success)
+    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.stop()
+
+        await interaction.response.defer()
+
+        try:
+            result = await command_handler.handler_rename_apply_job(
+                self.job.find, self.job.replace, self.job.case_sensitive
+            )
+        except ServiceUnavailable as e:
+            await interaction.edit_original_response(
+                embed=presentation.rename_embed(
+                    title="Rename Failed",
+                    description=f"Unable to reach claws.\n{e}",
+                    urgent=True,
+                ),
+                view=None,
+            )
+            return
+
+        if result.get("rejected"):
+            embed = presentation.rename_embed(
+                title="Not Renamed", description=result["rejected"], urgent=True,
+            )
+        else:
+            changes = result["changes"]
+
+            if not changes:
+                embed = presentation.rename_embed(
+                    title="Not Renamed",
+                    description="Nothing still matched by the time this was confirmed.",
+                )
+            else:
+                embed = presentation.rename_embed(
+                    title="Renamed",
+                    description=f"Renamed {len(changes)} item{'s' if len(changes) != 1 else ''}.",
+                    changes=changes,
+                    verb="were renamed",
+                )
+
+        await interaction.edit_original_response(embed=embed, view=None)
+
+    @discord.ui.button(label="Discard", style=discord.ButtonStyle.secondary)
+    async def discard(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.stop()
+
+        embed = presentation.rename_embed(
+            title="Rename Preview",
+            description="Discarded, nothing was renamed.",
+            changes=self.changes,
+        )
+
+        await interaction.response.edit_message(embed=embed, view=None)
+
+
+@bot.tree.command(name="bulk_rename", description="Find and replace text within item names")
+@app_commands.describe(
+    find="Text to find in item names",
+    replace="Text to replace it with, leave empty to remove it",
+    case_sensitive="Only match text with the exact same capitalization",
+)
+async def bulk_rename(interaction: discord.Interaction, find: str, replace: str = "",
+                      case_sensitive: bool = False):
+    await interaction.response.defer()
+
+    job = RenameJob(find=find, replace=replace, case_sensitive=case_sensitive)
+
+    try:
+        result = await command_handler.handler_rename_preview_job(
+            job.find, job.replace, job.case_sensitive
+        )
+    except ServiceUnavailable as e:
+        await interaction.followup.send(f"Unable to reach claws.\n{e}")
+        return
+
+    if result.get("rejected"):
+        await interaction.followup.send(result["rejected"])
+        return
+
+    changes = result["changes"]
+
+    if not changes:
+        await interaction.followup.send(f'No item names contain "{job.find}".')
+        return
+
+    view = ConfirmRename(interaction.user, job, changes)
+
+    view.message = await interaction.followup.send(
+        embed=presentation.rename_embed(
+            title="Rename Preview",
+            description="Nothing has been renamed yet.",
+            changes=changes,
+        ),
+        view=view,
+    )
+
 @bot.tree.command(name="search_tag", description="Search inventory by tag")
 @app_commands.describe(tag="Tag to search for")
 @app_commands.autocomplete(tag=tag_autocomplete)

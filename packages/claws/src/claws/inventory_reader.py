@@ -1004,6 +1004,58 @@ class SpreadsheetManager:
             self.connection.commit()
             return True
 
+    def preview_rename(self, find: str, replace: str, case_sensitive: bool = False) -> list[dict[str, Any]]:
+        """Every item whose name would change, without writing anything.
+
+        Matching is substring rather than whole-word, and case-insensitive
+        unless asked otherwise -- the point is catching a typo made
+        consistently (ex: through Discord's edit-last-command), and someone
+        fixing "capasiter" should not have to also chase "Capasiter" and
+        "CAPASITER" down one at a time.
+        """
+        find = str(find or "")
+
+        if not find:
+            return []
+
+        flags = 0 if case_sensitive else re.IGNORECASE
+        pattern = re.compile(re.escape(find), flags)
+
+        with self.lock:
+            rows = self.connection.execute("SELECT sku, name FROM items").fetchall()
+
+        changes = []
+
+        for row in rows:
+            name = row["name"] or ""
+            new_name = pattern.sub(replace, name)
+
+            if new_name != name:
+                changes.append({"SKU": row["sku"], "OLD_NAME": name, "NEW_NAME": new_name})
+
+        return changes
+
+    def apply_rename(self, changes: list[dict[str, Any]]) -> None:
+        """Write exactly the changes given, in one transaction.
+
+        Takes the changes rather than a find/replace pair so the caller
+        decides how fresh they need to be. The service re-runs preview_rename
+        right before this, so a rename made in the gap between someone seeing
+        the preview and pressing confirm is reflected rather than clobbered.
+        """
+        with self.lock:
+            for change in changes:
+                self.connection.execute(
+                    """
+                    UPDATE items
+                    SET name = ?
+                    WHERE sku = ?
+                    """,
+                    (change["NEW_NAME"], change["SKU"]),
+                )
+
+            self.connection.commit()
+
     def delete_item(self, sku: str) -> bool:
         with self.lock:
             cursor = self.connection.execute(
