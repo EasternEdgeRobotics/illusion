@@ -171,64 +171,141 @@ std::string formatUptime(long long ms) {
     return buffer;
 }
 
-// A coloured dot plus a word, rather than colouring the word itself: the
-// status line is read from across the closet, and the dot survives being out
-// of focus better than tinted text does.
-void statusDot(const ImVec4& colour, const char* label) {
-    ImGui::TextColored(colour, "%s", "\xe2\x97\x8f");  // U+25CF BLACK CIRCLE
-    ImGui::SameLine();
-    ImGui::TextUnformatted(label);
+constexpr ImVec4 kGood { 0.35f, 0.80f, 0.45f, 1.0f };
+constexpr ImVec4 kWarn { 0.90f, 0.65f, 0.30f, 1.0f };
+constexpr ImVec4 kBad  { 0.88f, 0.36f, 0.36f, 1.0f };
+
+// The state of lipgloss in 3 words
+struct Status {
+    ImVec4 colour;
+    const char* label;
+};
+
+Status statusOf(const lipgloss::Snapshot& snapshot) {
+    if (!snapshot.reachable) {
+        return { kBad, "Unreachable" };
+    }
+
+    if (snapshot.unauthorized) {
+        return { kWarn, "Token rejected" };
+    }
+
+    if (snapshot.paused) {
+        return { kWarn, "Queue paused" };
+    }
+
+    return { kGood, "Connected" };
 }
 
-void drawConnectionStatus(const lipgloss::Snapshot& snapshot) {
-    constexpr ImVec4 kGood { 0.35f, 0.80f, 0.45f, 1.0f };
-    constexpr ImVec4 kWarn { 0.90f, 0.65f, 0.30f, 1.0f };
-    constexpr ImVec4 kBad  { 0.88f, 0.36f, 0.36f, 1.0f };
+// The indicator and the refresh button, drawn inside the menu bar.
+// SameLine isnt required because BeginMenuBar already handles that
+void drawStatusBar(const lipgloss::Snapshot& snapshot, lipgloss::Client& client) {
+    const Status status = statusOf(snapshot);
+    const ImGuiStyle& style = ImGui::GetStyle();
 
-    if (!snapshot.reachable) {
-        statusDot(kBad, "lipgloss unreachable");
-    } else if (snapshot.unauthorized) {
-        statusDot(kWarn, "lipgloss up, token rejected");
-    } else if (snapshot.paused) {
-        statusDot(kWarn, "queue paused");
-    } else {
-        statusDot(kGood, "connected");
+    constexpr const char* kDot = "\xe2\x97\x8f";  // U+25CF BLACK CIRCLE
+
+    // Right alligned
+    // Calculated based off the width of whats about to be drawn, because imgui
+    // doesn't have a way to natively handle this 
+    // 
+    // SmallButton's width is its label plus FramePadding.x on each side, it
+    // zeroes only the vertical padding. The two ItemSpacing gaps are the ones
+    // the horizontal layout will insert between the three items.
+    const float width =
+        ImGui::CalcTextSize(kDot).x +
+        ImGui::CalcTextSize(status.label).x +
+        ImGui::CalcTextSize("Refresh").x + style.FramePadding.x * 2.0f +
+        style.ItemSpacing.x * 2.0f;
+
+    const float avail = ImGui::GetContentRegionAvail().x;
+
+    // Offset from where the cursor already is rather than an absolute X
+    if (avail > width) {
+        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + avail - width);
     }
 
-    if (!snapshot.error.empty()) {
-        ImGui::PushTextWrapPos(0.0f);
-        ImGui::TextColored(snapshot.unauthorized ? kWarn : kBad, "%s",
-                           snapshot.error.c_str());
-        ImGui::PopTextWrapPos();
+    ImGui::TextColored(status.colour, "%s", kDot);
+    bool hovered = ImGui::IsItemHovered();
+
+    ImGui::TextUnformatted(status.label);
+    hovered = hovered || ImGui::IsItemHovered();
+
+    // Checked on both halves so hovering the dot works as well as the word.
+    if (hovered && !snapshot.error.empty()) {
+        ImGui::SetTooltip("%s", snapshot.error.c_str());
     }
 
-    if (!snapshot.reachable) {
+    if (ImGui::Button("Refresh")) {
+        client.refresh();
+    }
+}
+
+// A two-column key/value block: dimmed label on the left, value on the right,
+// columns sized to their content. Every block on the About page is built from
+// these two calls so they read as one kind of thing rather than as several.
+bool beginInfoTable(const char* id) {
+    return ImGui::BeginTable(id, 2, ImGuiTableFlags_SizingFixedFit);
+}
+
+void infoRow(const char* key, const char* value) {
+    ImGui::TableNextRow();
+    ImGui::TableNextColumn();
+    ImGui::TextDisabled("%s", key);
+    ImGui::TableNextColumn();
+    ImGui::TextUnformatted(value);
+}
+
+// What this binary is. Fixed for the life of the process.
+void drawBuildInfo(SDL_GPUDevice* gpuDevice) {
+    if (!beginInfoTable("build")) {
         return;
     }
 
-    ImGui::Spacing();
+    infoRow("Version", SGUMI_VERSION);
+    infoRow("Built", EER_BUILD_DATE);
 
-    if (ImGui::BeginTable("health", 2, ImGuiTableFlags_SizingFixedFit)) {
-        auto row = [](const char* key, const std::string& value) {
-            ImGui::TableNextRow();
-            ImGui::TableNextColumn();
-            ImGui::TextDisabled("%s", key);
-            ImGui::TableNextColumn();
-            ImGui::TextUnformatted(value.c_str());
-        };
+    // Theoretically it should be impossible for this to be needed, because
+    // a gpu is needed to even render this, but its good practice to have
+    // a fallback, even if its realistically useless.
+    const char* driver = SDL_GetGPUDeviceDriver(gpuDevice);
+    infoRow("Renderer", driver ? driver : "unknown");
 
-        row("Version", snapshot.version);
-        row("Model", snapshot.model);
-        row("Printer port", snapshot.printerPort);
-        row("Uptime", formatUptime(snapshot.uptimeMs));
+    ImGui::EndTable();
+}
 
-        ImGui::EndTable();
+// lipgloss's own identity and health, from GET /health.
+void drawServiceInfo(const lipgloss::Snapshot& snapshot) {
+    if (!snapshot.reachable) {
+        ImGui::TextDisabled("Not connected.");
+        return;
     }
+
+    if (!beginInfoTable("health")) {
+        return;
+    }
+
+    infoRow("Version", snapshot.version.c_str());
+    infoRow("Model", snapshot.model.c_str());
+    infoRow("Printer port", snapshot.printerPort.c_str());
+    infoRow("Uptime", formatUptime(snapshot.uptimeMs).c_str());
+
+    ImGui::EndTable();
 }
 
 void drawQueue(const lipgloss::Snapshot& snapshot) {
     if (!snapshot.reachable || snapshot.unauthorized) {
         ImGui::TextDisabled("Queue unavailable.");
+
+        // The indicator in the bar has room for three words, so the reason goes here
+        if (!snapshot.error.empty()) {
+            ImGui::Spacing();
+            ImGui::PushTextWrapPos(0.0f);
+            ImGui::TextColored(snapshot.unauthorized ? kWarn : kBad, "%s",
+                               snapshot.error.c_str());
+            ImGui::PopTextWrapPos();
+        }
+
         return;
     }
 
@@ -445,10 +522,6 @@ int runSgumi() {
                         showSettings = true;
                     }
 
-                    if (ImGui::MenuItem("Refresh now")) {
-                        client.refresh();
-                    }
-
                     ImGui::Separator();
 
                     if (ImGui::MenuItem("Quit")) {
@@ -458,13 +531,11 @@ int runSgumi() {
                     ImGui::EndMenu();
                 }
 
+                drawStatusBar(snapshot, client);
+
                 ImGui::EndMenuBar();
             }
 
-            ImGui::SeparatorText("Connection");
-            drawConnectionStatus(snapshot);
-
-            ImGui::Spacing();
             ImGui::SeparatorText("Print queue");
             drawQueue(snapshot);
 
@@ -525,18 +596,25 @@ int runSgumi() {
                     if (ImGui::BeginTabItem("About")) {
                         ImGui::TextUnformatted("Super Graphic Ultra Modern Interface");
                         ImGui::TextDisabled("illusion's frontend for lipgloss");
-                        ImGui::Separator();
-                        ImGui::Text("Version %s", SGUMI_VERSION);
-                        ImGui::Text("Built %s", EER_BUILD_DATE);
-                        ImGui::Text("Renderer %s",
-                                    SDL_GetGPUDeviceDriver(gpuDevice));
+
+                        // Two versions, and they are not the same thing: this
+                        // build, and whatever the service on the other end
+                        // happens to be running. Kept apart so a mismatch
+                        // between them is visible rather than confusing.
+                        ImGui::SeparatorText("This build");
+                        drawBuildInfo(gpuDevice);
+
+                        ImGui::SeparatorText("lipgloss");
+                        drawServiceInfo(snapshot);
+
+                        ImGui::Spacing();
                         ImGui::Separator();
                         ImGui::TextDisabled("Config: %s", configPath.string().c_str());
 
                         ImGui::EndTabItem();
                     }
+                    ImGui::EndTabBar();
                 }
-                ImGui::EndTabBar();
             }
 
             ImGui::End();

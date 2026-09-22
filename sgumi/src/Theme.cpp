@@ -27,20 +27,37 @@
 namespace theme {
 
 // Colours are 0xRRGGBB. Alpha is separate where it matters.
+//
+// The teals are sampled from the app's icon background
 constexpr unsigned kBgWindow    = 0x14161B; // outermost background
 constexpr unsigned kBgPanel     = 0x1B1E25; // child windows, popups, menus
 constexpr unsigned kBgFrame     = 0x232732; // inputs, buttons, sliders at rest
-constexpr unsigned kBgFrameHot  = 0x018796; // ...hovered
-constexpr unsigned kBgFrameOn   = 0x007AD9; // ...held or active
-constexpr unsigned kBorder      = 0x018796;
+constexpr unsigned kBgFrameHot  = 0x24343B; // ...hovered, a teal-tinted lift
+constexpr unsigned kBgFrameOn   = 0x015E69; // ...held or active
 
-constexpr unsigned kText        = 0xE6E9EF;
+// Structural, not decorative. This one value drives ImGuiCol_Border,
+// ImGuiCol_Separator AND the table grid (see TableBorderStrong below), so a
+// saturated colour here paints every section rule and every row line in the
+// accent and leaves nothing quiet for the accent to stand against.
+constexpr unsigned kBorder      = 0x243038;
+
+// Chrome: title bars, the menu bar and table header rows.
+constexpr unsigned kChrome      = 0x0E3138; // at rest, and unfocused windows
+constexpr unsigned kChromeOn    = 0x015E69; // the focused window's title bar
+
+// The icon's sash, a warm off-white.
+constexpr unsigned kText        = 0xEDEAE4;
 constexpr unsigned kTextDim     = 0x98A1B0; // disabled text, hints
 
-constexpr unsigned kAccent      = 0x007AD9; // selection, checks, active tab
-constexpr unsigned kAccentHot   = 0x007AD9;
-constexpr unsigned kAccentDim   = 0x018796;
+// One hue, three lightnesses: hover brightens, pressed deepens. Doing it this
+// way means interaction reads as intensity rather than as a colour change,
+// which is what keeps it legible next to the status colours below.
+constexpr unsigned kAccent      = 0x018796; // icon ground; selection, checks
+constexpr unsigned kAccentHot   = 0x2ABECF; // the icon's bright speckle
+constexpr unsigned kAccentDim   = 0x015E69;
 
+// Deliberately NOT drawn from the icon. Its lettering is a pink goldish copper 
+// (#B76E4E deep, #DB8275 bright) which is pretty similar to kDanger
 constexpr unsigned kWarning     = 0xE5A54B;
 constexpr unsigned kDanger      = 0xE05C5C;
 
@@ -115,6 +132,8 @@ struct LiveColours {
     ImVec4 bgFrameHot;
     ImVec4 bgFrameOn;
     ImVec4 border;
+    ImVec4 chrome;
+    ImVec4 chromeOn;
     ImVec4 text;
     ImVec4 textDim;
     ImVec4 accent;
@@ -135,6 +154,8 @@ void seedFromConstants() {
     g_colours.bgFrameHot = rgb(kBgFrameHot);
     g_colours.bgFrameOn  = rgb(kBgFrameOn);
     g_colours.border     = rgb(kBorder);
+    g_colours.chrome     = rgb(kChrome);
+    g_colours.chromeOn   = rgb(kChromeOn);
     g_colours.text       = rgb(kText);
     g_colours.textDim    = rgb(kTextDim);
     g_colours.accent     = rgb(kAccent);
@@ -153,7 +174,7 @@ void applyColours(const LiveColours& t) {
     c[ImGuiCol_WindowBg]              = t.bgWindow;
     c[ImGuiCol_ChildBg]               = t.bgPanel;
     c[ImGuiCol_PopupBg]               = t.bgPanel;
-    c[ImGuiCol_MenuBarBg]             = t.bgPanel;
+    c[ImGuiCol_MenuBarBg]             = t.chrome;
 
     c[ImGuiCol_Border]                = t.border;
     c[ImGuiCol_BorderShadow]          = rgb(0x000000, 0.0f);
@@ -162,9 +183,12 @@ void applyColours(const LiveColours& t) {
     c[ImGuiCol_FrameBgHovered]        = t.bgFrameHot;
     c[ImGuiCol_FrameBgActive]         = t.bgFrameOn;
 
-    c[ImGuiCol_TitleBg]               = t.bgPanel;
-    c[ImGuiCol_TitleBgActive]         = t.bgPanel;
-    c[ImGuiCol_TitleBgCollapsed]      = withAlpha(t.bgPanel, 0.75f);
+    // Active is the brighter of the two, so a focused window's title bar is
+    // visibly ahead of an unfocused one. These were both bgPanel before, which
+    // meant a stack of windows gave no clue which one had the keyboard.
+    c[ImGuiCol_TitleBg]               = t.chrome;
+    c[ImGuiCol_TitleBgActive]         = t.chromeOn;
+    c[ImGuiCol_TitleBgCollapsed]      = withAlpha(t.chrome, 0.75f);
 
     c[ImGuiCol_ScrollbarBg]           = withAlpha(t.bgWindow, 0.0f);
     c[ImGuiCol_ScrollbarGrab]         = t.bgFrameHot;
@@ -203,7 +227,7 @@ void applyColours(const LiveColours& t) {
     c[ImGuiCol_PlotHistogram]         = t.warning;
     c[ImGuiCol_PlotHistogramHovered]  = t.danger;
 
-    c[ImGuiCol_TableHeaderBg]         = t.bgFrame;
+    c[ImGuiCol_TableHeaderBg]         = t.chrome;
     c[ImGuiCol_TableBorderStrong]     = t.border;
     c[ImGuiCol_TableBorderLight]      = withAlpha(t.border, 0.5f);
     c[ImGuiCol_TableRowBg]            = rgb(0x000000, 0.0f);
@@ -398,6 +422,8 @@ std::string exportConstants() {
         { "kBgFrameHot ", &g_colours.bgFrameHot },
         { "kBgFrameOn  ", &g_colours.bgFrameOn  },
         { "kBorder     ", &g_colours.border     },
+        { "kChrome     ", &g_colours.chrome     },
+        { "kChromeOn   ", &g_colours.chromeOn   },
         { "kText       ", &g_colours.text       },
         { "kTextDim    ", &g_colours.textDim    },
         { "kAccent     ", &g_colours.accent     },
@@ -458,6 +484,11 @@ void drawThemeEditor(bool* open) {
     colourRow("Frame hover", "Inputs and buttons hovered",      g_colours.bgFrameHot);
     colourRow("Frame active","Inputs and buttons held",         g_colours.bgFrameOn);
     colourRow("Border",      "Separators, child window edges",  g_colours.border);
+
+    ImGui::Spacing();
+
+    colourRow("Chrome",      "Menu bar, table headers, title bars", g_colours.chrome);
+    colourRow("Chrome focus","Focused window's title bar",      g_colours.chromeOn);
 
     ImGui::Spacing();
 
