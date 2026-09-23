@@ -134,9 +134,43 @@ void Client::submitBarcodes(int lower, int upper) {
     wake_.notify_all();
 }
 
+void Client::submitPreview(PrintRequest request) {
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+
+        // The old PNG is kept while the new one is in flight, so refreshing a
+        // preview does not blank the one already on screen. serial is what
+        // tells the UI whether to re-upload, and it does not move until the
+        // bytes actually change.
+        preview_.state = PreviewResult::State::Pending;
+        preview_.error.clear();
+
+        pendingPreview_ = std::move(request);
+    }
+
+    wake_.notify_all();
+}
+
 void Client::clearAction() {
     std::lock_guard<std::mutex> lock(mutex_);
     action_ = ActionResult {};
+}
+
+void Client::clearPreview() {
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    // serial deliberately not reset: it only ever counts up, so a UI holding
+    // an old value cannot mistake a cleared preview for the one it uploaded.
+    preview_.state = PreviewResult::State::Idle;
+    preview_.png.clear();
+    preview_.error.clear();
+    preview_.serial++;
+    pendingPreview_.reset();
+}
+
+PreviewResult Client::previewResult() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return preview_;
 }
 
 Snapshot Client::snapshot() const {
@@ -155,24 +189,35 @@ void Client::run() {
         // poll is background. Running it first also means the poll that
         // follows already reflects the job just queued.
         std::optional<PendingAction> pending;
+        std::optional<PrintRequest> preview;
 
         {
             std::lock_guard<std::mutex> lock(mutex_);
             pending.swap(pendingAction_);
+            preview.swap(pendingPreview_);
         }
 
         if (pending) {
             runAction(*pending);
         }
 
+        // After the action: a print and a preview submitted in the same breath
+        // should put the job on the queue first, since that is the one with a
+        // printer waiting on it.
+        if (preview) {
+            runPreview(*preview);
+        }
+
         pollOnce();
 
         std::unique_lock<std::mutex> lock(mutex_);
 
-        // Predicated on both, so neither a stop nor a submitted job waits out
-        // the remaining interval.
+        // Predicated on all three, so neither a stop nor submitted work waits
+        // out the remaining interval.
         wake_.wait_for(lock, kPollInterval, [this] {
-            return !running_.load() || pendingAction_.has_value();
+            return !running_.load() ||
+                   pendingAction_.has_value() ||
+                   pendingPreview_.has_value();
         });
     }
 }
@@ -270,6 +315,66 @@ void Client::runAction(const PendingAction& action) {
 
     std::lock_guard<std::mutex> lock(mutex_);
     action_ = std::move(result);
+}
+
+void Client::runPreview(const PrintRequest& request) {
+    std::string baseUrl;
+    std::string token;
+
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        baseUrl = baseUrl_;
+        token = token_;
+    }
+
+    PreviewResult result;
+    result.state = PreviewResult::State::Failed;
+
+    if (baseUrl.empty()) {
+        result.error = "No lipgloss URL configured.";
+    } else {
+        json body;
+        body["style"] = request.style;
+        putOrNull(body, "sku", request.sku);
+        putOrNull(body, "line_1", request.line1);
+        putOrNull(body, "line_2", request.line2);
+        body["scale"] = kPreviewScale;
+
+        const http::Response response =
+            http::post(http::join(baseUrl, "/preview"), token, body.dump());
+
+        if (!response.transportOk) {
+            result.error = response.error;
+        } else if (response.status == 401 || response.status == 403) {
+            result.error = "lipgloss rejected the token.";
+        } else if (response.status != 200) {
+            // Not JSON-parsed: this endpoint answers with a PNG when it is
+            // happy, so a failure body is whatever FastAPI felt like saying,
+            // and quoting it verbatim beats guessing at its shape.
+            result.error = "lipgloss returned HTTP " +
+                           std::to_string(response.status) + ": " + response.body;
+        } else if (response.body.empty()) {
+            result.error = "lipgloss returned an empty preview.";
+        } else {
+            result.state = PreviewResult::State::Ready;
+            result.png = response.body;
+        }
+    }
+
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    // Carried over and incremented rather than restarted, so the counter is
+    // monotonic for the life of the client and the UI can compare against it
+    // without worrying about wraparound or reuse.
+    result.serial = preview_.serial + 1;
+
+    // A failed refresh keeps the last good PNG on screen with the error beside
+    // it, which is more useful than a blank panel.
+    if (result.state != PreviewResult::State::Ready) {
+        result.png = preview_.png;
+    }
+
+    preview_ = std::move(result);
 }
 
 void Client::pollOnce() {

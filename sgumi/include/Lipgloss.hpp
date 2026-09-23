@@ -110,6 +110,32 @@ struct ActionResult {
     bool queuePaused = false;
 };
 
+// lipgloss clamps this to PREVIEW_MAX_SCALE (8) in label_maker.py. 3 is its
+// default and is what the bot asks for.
+constexpr int kPreviewScale = 3;
+
+// The PNG POST /preview hands back, and what went wrong if it did not.
+struct PreviewResult {
+    enum class State {
+        Idle,
+        Pending,
+        Ready,
+        Failed,
+    };
+
+    State state = State::Idle;
+
+    // Raw PNG bytes. std::string rather than a vector because that is what the
+    // HTTP layer fills and it holds arbitrary bytes perfectly well.
+    std::string png;
+
+    std::string error;
+
+    // Bumped every time png is replaced. The UI uploads a texture only when
+    // this changes, rather than decoding the same PNG every frame.
+    unsigned long long serial = 0;
+};
+
 class Client {
 public:
     Client();
@@ -142,12 +168,21 @@ public:
     // POST /print/barcodes -- one barcode label per SKU in [lower, upper].
     void submitBarcodes(int lower, int upper);
 
+    // POST /preview -- the label this request would print, as a PNG, printing
+    // nothing. Takes the same fields; copies is ignored.
+    //
+    // Queued separately from prints rather than sharing their slot, so asking
+    // for a preview can never displace a print that was already on its way.
+    void submitPreview(PrintRequest request);
+
     void clearAction();
+    void clearPreview();
 
     // All thread-safe, all return copies, which is what lets the caller hold
     // one for a whole frame without blocking the worker.
     Snapshot snapshot() const;
     ActionResult actionResult() const;
+    PreviewResult previewResult() const;
 
 private:
     // One slot, not a queue: the UI submits one action at a time.
@@ -166,6 +201,7 @@ private:
     void run();
     void pollOnce();
     void runAction(const PendingAction& action);
+    void runPreview(const PrintRequest& request);
 
     mutable std::mutex mutex_;
     std::condition_variable wake_;
@@ -176,6 +212,9 @@ private:
 
     ActionResult action_;
     std::optional<PendingAction> pendingAction_;
+
+    PreviewResult preview_;
+    std::optional<PrintRequest> pendingPreview_;
 
     std::atomic<bool> running_ { false };
     std::thread worker_;

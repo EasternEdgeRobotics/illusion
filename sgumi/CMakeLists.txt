@@ -76,6 +76,7 @@ add_executable(
   src/main.cpp
   src/Claws.cpp
   src/Http.cpp
+  src/Image.cpp
   src/Lipgloss.cpp
   src/Paths.cpp
   src/Theme.cpp
@@ -126,6 +127,7 @@ target_link_libraries(
   PRIVATE
     sgumi::sdl3
     sgumi::imgui
+    sgumi::stb
     nlohmann_json::nlohmann_json
     CURL::libcurl
 )

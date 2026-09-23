@@ -10,6 +10,7 @@
 
 #include "Claws.hpp"
 #include "Http.hpp"
+#include "Image.hpp"
 #include "Lipgloss.hpp"
 #include "Paths.hpp"
 #include "Theme.hpp"
@@ -74,6 +75,11 @@ struct PrintForm {
     // once per lookup rather than every frame -- otherwise editing line 1
     // would be undone on the next frame.
     std::string filledFromSku;
+
+    // requestSignature() of whatever the showing preview was rendered from, so
+    // an edit since can be pointed out rather than leaving a stale picture
+    // looking current.
+    std::string previewOf;
 
     // The barcode range printer, which shares nothing with the fields above.
     int rangeLower = 1;
@@ -552,6 +558,90 @@ void drawLookupResult(const claws::Lookup& lookup) {
     }
 }
 
+// The form as lipgloss wants it. Used for both Print and Preview, so the
+// preview is guaranteed to render the label the print would.
+lipgloss::PrintRequest buildRequest(const Style& style) {
+    lipgloss::PrintRequest request;
+
+    std::string line2 = g_print.line2;
+    request.style = resolveStyle(style, g_print.line1, line2);
+    request.sku = style.needsSku ? cleanSku(g_print.sku) : "";
+    request.line1 = style.needsLine1 ? g_print.line1 : "";
+    request.line2 = style.usesLine2 ? line2 : "";
+    request.copies = g_print.copies;
+
+    return request;
+}
+
+// Everything the preview depends on, flattened. Compared against what the
+// showing preview was made from, to notice when it has gone stale -- copies is
+// left out on purpose, since printing three of a label does not change how it
+// looks.
+std::string requestSignature(const Style& style) {
+    const lipgloss::PrintRequest request = buildRequest(style);
+
+    return request.style + '\x1f' + request.sku + '\x1f' +
+           request.line1 + '\x1f' + request.line2;
+}
+
+void drawPreview(
+    const lipgloss::PreviewResult& preview,
+    const Style& style,
+    SDL_GPUDevice* device)
+{
+    // Uploaded only when the bytes actually change. Static because the texture
+    // has to outlive the frame that draws it, and there is exactly one preview
+    // panel -- a member of some UI object would be tidier but buys nothing
+    // while that stays true.
+    static image::Texture texture;
+    static unsigned long long uploaded = 0;
+
+    if (preview.serial != uploaded) {
+        uploaded = preview.serial;
+
+        if (preview.png.empty()) {
+            texture.reset();
+        } else {
+            texture.load(device, preview.png.data(), preview.png.size());
+        }
+    }
+
+    if (preview.state == lipgloss::PreviewResult::State::Pending) {
+        ImGui::TextDisabled("Rendering...");
+    } else if (!preview.error.empty()) {
+        ImGui::PushTextWrapPos(0.0f);
+        ImGui::TextColored(kBad, "%s", preview.error.c_str());
+        ImGui::PopTextWrapPos();
+    }
+
+    if (!texture.valid()) {
+        if (preview.state == lipgloss::PreviewResult::State::Idle) {
+            ImGui::TextDisabled("Press Preview to see the label.");
+        }
+
+        return;
+    }
+
+    // lipgloss has already scaled the label up for a screen, so this only ever
+    // shrinks it -- to the panel width when the window is narrow, which is the
+    // phone case. Aspect ratio preserved so a barcode is never stretched into
+    // something that would not scan off the screen.
+    const float natural = static_cast<float>(texture.width());
+    const float avail = ImGui::GetContentRegionAvail().x;
+    const float scale = avail > 0.0f && natural > avail ? avail / natural : 1.0f;
+
+    ImGui::Image(
+        texture.id(),
+        ImVec2(natural * scale, static_cast<float>(texture.height()) * scale));
+
+    // The preview is a picture of fields that have since been edited, which is
+    // worth saying rather than letting someone print something they did not
+    // look at.
+    if (g_print.previewOf != requestSignature(style)) {
+        ImGui::TextColored(kWarn, "Fields changed since this preview.");
+    }
+}
+
 void drawPrint(
     lipgloss::Client& lipglossClient,
     claws::Client& clawsClient,
@@ -583,7 +673,11 @@ void drawPrint(
     ImGui::BeginDisabled(!style.needsSku);
 
     fieldLabel("SKU");
-    ImGui::SetNextItemWidth(fieldWidth());
+
+    // Narrower than the other fields, and deliberately so: a SKU is ten
+    // characters, and the width it gives up is what lets the toggle sit beside
+    // it and still leave the row inside a phone's portrait width.
+    ImGui::SetNextItemWidth(std::min(fieldWidth(), 140.0f));
 
     // EnterReturnsTrue for the barcode scanner, which types a SKU and presses
     // enter, that is the normal way a SKU reaches this box on the kiosk.
@@ -597,15 +691,18 @@ void drawPrint(
 
     const bool committed = entered || ImGui::IsItemDeactivatedAfterEdit();
 
-    // The toggle, indented to line up under the fields rather than under the
-    // labels. Mirrors the bot's get_text_from_sku flag: while it is on, line 1
-    // is claws's to fill and not the user's to type.
-    ImGui::Indent(kLabelWidth);
+    ImGui::SameLine();
 
-    const bool toggled =
-        ImGui::Checkbox("Get line 1 from SKU", &g_print.useSkuName);
+    // Mirrors the bot's get_text_from_sku flag: while it is on, line 1 is
+    // claws's to fill and not the user's to type. Labelled short to fit beside
+    // the box, with the full sentence on hover.
+    const bool toggled = ImGui::Checkbox("From claws", &g_print.useSkuName);
 
-    ImGui::Unindent(kLabelWidth);
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip(
+            "Fill line 1 with the item's name from claws.\n"
+            "Looks up when you press enter or click away.");
+    }
 
     ImGui::EndDisabled();
 
@@ -689,16 +786,21 @@ void drawPrint(
     ImGui::BeginDisabled(disabled);
 
     if (ImGui::Button("Print")) {
-        lipgloss::PrintRequest request;
+        lipglossClient.submitPrint(buildRequest(style));
+    }
 
-        std::string line2 = g_print.line2;
-        request.style = resolveStyle(style, g_print.line1, line2);
-        request.sku = style.needsSku ? cleanSku(g_print.sku) : "";
-        request.line1 = style.needsLine1 ? g_print.line1 : "";
-        request.line2 = style.usesLine2 ? line2 : "";
-        request.copies = g_print.copies;
+    ImGui::EndDisabled();
 
-        lipglossClient.submitPrint(request);
+    ImGui::SameLine();
+
+    // Preview needs the same fields filled as a print does -- it renders the
+    // same label -- but does not care whether lipgloss can reach the printer,
+    // so it stays available when Print is not.
+    ImGui::BeginDisabled(blocker != nullptr || !snapshot.reachable);
+
+    if (ImGui::Button("Preview")) {
+        lipglossClient.submitPreview(buildRequest(style));
+        g_print.previewOf = requestSignature(style);
     }
 
     ImGui::EndDisabled();
@@ -1029,6 +1131,11 @@ int runSgumi() {
 
             ImGui::SeparatorText("Print");
             drawPrint(client, clawsClient, snapshot);
+
+            ImGui::Spacing();
+            drawPreview(client.previewResult(),
+                        kStyles[g_print.styleIndex],
+                        gpuDevice);
 
             ImGui::Spacing();
 
