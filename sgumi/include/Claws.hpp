@@ -3,6 +3,7 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <map>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -68,6 +69,24 @@ struct Snapshot {
     std::chrono::steady_clock::time_point polled {};
 };
 
+// Every SKU claws knows, as SKU -> item name.
+//
+// Fetched in one GET /items rather than a request per SKU: a range can span
+// hundreds of labels, and the whole table is a few hundred rows. One request
+// that is occasionally larger than needed beats four hundred that are not.
+struct Catalog {
+    enum class State {
+        Idle,
+        Pending,
+        Ready,
+        Failed,
+    };
+
+    State state = State::Idle;
+    std::map<std::string, std::string> names;
+    std::string error;
+};
+
 class Client {
 public:
     Client() = default;
@@ -87,15 +106,23 @@ public:
 
     void clearLookup();
 
+    // Fetches the whole catalogue, for range printing. Returns immediately;
+    // watch catalog() for the answer. Calling it while one is in flight, or
+    // when one is already loaded, does nothing -- the table does not change
+    // often enough to be worth refetching on every keystroke.
+    void fetchCatalog();
+
     // Both thread-safe, both return copies so a frame can hold one without
     // blocking the worker.
     Lookup lookupResult() const;
     Snapshot snapshot() const;
+    Catalog catalog() const;
 
 private:
     void run();
     void pollHealth();
     void runLookup(const std::string& sku);
+    void runCatalog();
 
     mutable std::mutex mutex_;
     std::condition_variable wake_;
@@ -105,6 +132,8 @@ private:
 
     Snapshot snapshot_;
     Lookup lookup_;
+    Catalog catalog_;
+    bool pendingCatalog_ = false;
 
     // Set by lookup(), taken by the worker. One slot, not a queue.
     std::optional<std::string> pendingLookup_;

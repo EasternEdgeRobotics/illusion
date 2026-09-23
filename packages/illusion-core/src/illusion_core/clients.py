@@ -147,9 +147,23 @@ class LipglossClient(BaseClient):
             "copies": copies, "source": source, "reply_to": reply_to,
         })
 
-    async def print_barcodes(self, lower, upper, source="unknown", reply_to=None):
+    async def print_barcodes(self, lower, upper, style="slim_barcode",
+                             line_1=None, line_2=None,
+                             line_1_by_sku=None, line_2_by_sku=None,
+                             source="unknown", reply_to=None):
+        # Everything after upper is keyword-defaulted so existing positional
+        # callers are unaffected, and the defaults are what the endpoint did
+        # before it took any of them. Only styles that render the SKU are
+        # accepted, and line_1/line_2 are required exactly when the style has
+        # a cell for them -- see print_barcodes in lipgloss's service.py.
+        # The _by_sku maps give individual labels their own text, for a range
+        # of items that already exist. Resolve them against claws first:
+        # lipgloss deliberately knows nothing about inventory.
         return await self.post("/print/barcodes", json={
-            "lower": lower, "upper": upper, "source": source, "reply_to": reply_to,
+            "lower": lower, "upper": upper, "style": style,
+            "line_1": line_1, "line_2": line_2,
+            "line_1_by_sku": line_1_by_sku, "line_2_by_sku": line_2_by_sku,
+            "source": source, "reply_to": reply_to,
         })
 
     async def print_image(self, image_bytes, description, copies=1,

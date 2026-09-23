@@ -17,6 +17,7 @@
         },
         {
           "glass" : true,
+          "hidden" : false,
           "image-name" : "Background.png",
           "name" : "Background"
         }

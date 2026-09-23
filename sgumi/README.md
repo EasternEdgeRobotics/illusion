@@ -70,9 +70,13 @@ The label at the top is rendered by lipgloss, so it is exactly what will print. 
 Before anything has been previewed it shows an example label, which is also a real render rather than a drawing. If lipgloss isn't up yet you get a blank label outline instead.
 
 ### Range print
-Toggling **Range print** swaps the form for a start and end SKU, printing one label per SKU across the span. Both boxes take either `EER-000421` or `421`.
+Toggling **Range print** swaps the form for a start and end SKU, printing one label per SKU across the span. Both boxes take either `EER-000421` or `421`. It's for labelling a batch of items you've just added, without visiting each SKU one at a time.
 
-Always `slim_barcode` for now — `POST /print/barcodes` takes no style, so the style selector above it isn't sent. lipgloss refuses the job if the roll can't fit the whole run.
+Any style that puts the SKU on the label can be used; the ones that don't are left out of the picker, since a range of them would come out identical. For a style with a text line, each label's text is that item's name from claws — so the labels differ by more than their barcode.
+
+SGUMI does that resolution and sends a name per SKU. lipgloss never asks claws anything itself, which is deliberate: its only dependency is the printer in front of it. A SKU claws has never heard of falls back to printing its own SKU, so one missing item doesn't fail a run of two hundred. A coverage line under the fields says how much of the range was named before you print.
+
+lipgloss refuses the job if the roll can't fit the whole run.
 
 ## Reading the status line
 `/health` is unauthenticated and `/queue` is not, which is deliberate over in lipgloss and is what lets the indicator tell three failures apart:
@@ -85,6 +89,8 @@ Always `slim_barcode` for now — `POST /print/barcodes` takes no style, so the 
 | 🟢 Connected      | Working |
 
 Without that split, a token typo and a dead service look identical, which on a kiosk means someone power-cycles a laptop that was never the problem.
+
+While the queue is paused a **Resume queue** button appears under it. lipgloss answers that with its own account of what happened, which is shown verbatim — it returns success even when it could not resume, so "the queue is staying paused" is a normal reply and not an error.
 
 The indicator only describes lipgloss. claws is on the About page instead, since it not being reachable doesn't stop anything printing.
 
@@ -111,9 +117,9 @@ The four vendored checkouts under `third_party/` are pinned to the same commits 
 ## What's next
 In rough order:
 
-1. **Queue control.** `POST /queue/resume`, `POST /queue/clear` and `DELETE /queue/{id}`.
+1. **The rest of queue control.** Resume is wired up; `POST /queue/clear` and `DELETE /queue/{id}` are not.
 2. **SSE.** `GET /events` replaces the one-second poll.
 3. **Printing an image.** `POST /print/image`, the one print endpoint SGUMI doesn't reach yet.
-4. **A style for range printing.** Needs a `style` field on `BarcodeRangeRequest` first; only `slim_barcode` and `classic_barcode` need nothing but a SKU, so anything else also needs text the range can supply itself.
+4. **Range styles in the bot.** The wire now carries `style` and per-SKU text, so the bot could offer what SGUMI does.
 
 [`clients.py`](../packages/illusion-core/src/illusion_core/clients.py) is the reference for every endpoint.

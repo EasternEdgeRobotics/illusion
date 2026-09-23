@@ -118,7 +118,9 @@ void Client::submitPrint(PrintRequest request) {
     wake_.notify_all();
 }
 
-void Client::submitBarcodes(int lower, int upper) {
+void Client::submitBarcodes(int lower, int upper, std::string style,
+                            std::string line1, std::string line2,
+                            std::map<std::string, std::string> line1BySku) {
     {
         std::lock_guard<std::mutex> lock(mutex_);
 
@@ -130,6 +132,10 @@ void Client::submitBarcodes(int lower, int upper) {
         pending.kind = PendingAction::Kind::Barcodes;
         pending.lower = lower;
         pending.upper = upper;
+        pending.print.style = std::move(style);
+        pending.print.line1 = std::move(line1);
+        pending.print.line2 = std::move(line2);
+        pending.line1BySku = std::move(line1BySku);
         pendingAction_ = std::move(pending);
     }
 
@@ -293,6 +299,19 @@ void Client::runAction(const PendingAction& action) {
 
         body["lower"] = action.lower;
         body["upper"] = action.upper;
+        body["style"] = action.print.style;
+        putOrNull(body, "line_1", action.print.line1);
+        putOrNull(body, "line_2", action.print.line2);
+
+        // Per-SKU names, resolved against claws by the caller. lipgloss looks
+        // nothing up itself, so an empty map simply means every label falls
+        // back to the flat line_1 above.
+        if (action.line1BySku.empty()) {
+            body["line_1_by_sku"] = nullptr;
+        } else {
+            body["line_1_by_sku"] = action.line1BySku;
+        }
+
         body["source"] = kSource;
     } else {
         // Resume takes no body at all. FastAPI is content with an empty JSON

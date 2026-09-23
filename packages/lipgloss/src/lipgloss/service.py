@@ -54,6 +54,27 @@ class PrintRequest(BaseModel):
 class BarcodeRangeRequest(BaseModel):
     lower: int
     upper: int
+
+    # Optional, and defaulting to what this endpoint used to hardcode, so
+    # callers written before it existed keep working unchanged.
+    #
+    # Only styles that actually render the SKU are accepted -- see
+    # print_barcodes.
+    style: str = "slim_barcode"
+
+    # Text for the run. line_1/line_2 are the same on every label; the _by_sku
+    # maps override them for individual SKUs and are what make a range of real
+    # items each carry its own name.
+    #
+    # The maps are filled by the caller, never by this service. lipgloss does
+    # not know what a SKU means -- see the module docstring -- so anything that
+    # wants item names resolves them against claws first and sends the result.
+    # A SKU absent from a map falls back to the flat value.
+    line_1: str | None = None
+    line_2: str | None = None
+    line_1_by_sku: dict[str, str] | None = None
+    line_2_by_sku: dict[str, str] | None = None
+
     source: str = "unknown"
     reply_to: str | None = None
 
@@ -212,6 +233,52 @@ def create_app(config_path="./lipgloss.yaml"):
         if request.upper < request.lower:
             return {"job_id": None, "message": f"{request.lower} is higher than {request.upper}"}
 
+        if request.style not in LABEL_STYLES:
+            return {"job_id": None, "message": f"Unknown style: {request.style}"}
+
+        # Which cells the style has decides what this can fill in. A style with
+        # no SKU cell would print the same label for every number in the range,
+        # which is never what someone asking for a range of SKUs wanted.
+        fields = {cell["value"] for cell in LABEL_STYLES[request.style]["cells"]}
+
+        if "sku" not in fields:
+            return {
+                "job_id": None,
+                "message": (
+                    f"{request.style} does not put the SKU on the label, so "
+                    "every label in the range would come out identical."
+                ),
+            }
+
+        def _sku(number):
+            return f"EER-{number:06d}"
+
+        def _text(sku, by_sku, flat):
+            """This label's text: its own if the caller gave it one, else the
+            run's."""
+            return (by_sku or {}).get(sku) or flat
+
+        # Checked across the whole range rather than once, because the _by_sku
+        # maps mean different labels can be missing different things. The SKU
+        # is stood in for since it is supplied per label below.
+        for number in range(request.lower, request.upper + 1):
+            sku = _sku(number)
+
+            missing = missing_values(
+                request.style,
+                {
+                    "sku": "per-label",
+                    "input_text_1": _text(sku, request.line_1_by_sku, request.line_1),
+                    "input_text_2": _text(sku, request.line_2_by_sku, request.line_2),
+                },
+            )
+
+            if missing:
+                return {
+                    "job_id": None,
+                    "message": f"{request.style} needs {', '.join(missing)} for {sku}",
+                }
+
         total_prints = request.upper - request.lower + 1
 
         # Warn about a roll that cant fit the job before printing any of it,
@@ -243,14 +310,25 @@ def create_app(config_path="./lipgloss.yaml"):
                 ),
             }
 
-        pages = [
-            labelmaker.render_label(
-                style_name="slim_barcode",
-                width=LABEL_WIDTH,
-                height=LABEL_HEIGHT,
-                output=str(output_dir / f"barcode_EER-{number:06d}"),
-                sku=f"EER-{number:06d}",
+        def _range_label(number):
+            """One label of the run.
+
+            Routed through _render_printable rather than rendering here, so a
+            range gets the same geometry and the same style checks a single
+            print does.
+            """
+            sku = _sku(number)
+
+            return _render_printable(
+                request.style,
+                sku,
+                _text(sku, request.line_1_by_sku, request.line_1),
+                _text(sku, request.line_2_by_sku, request.line_2),
+                f"barcode_{sku}",
             )
+
+        pages = [
+            _range_label(number)
             for number in range(request.lower, request.upper + 1)
         ]
 

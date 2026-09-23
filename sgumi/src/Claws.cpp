@@ -95,6 +95,8 @@ void Client::setEndpoint(std::string baseUrl, std::string token) {
         // beside a new URL.
         snapshot_ = Snapshot {};
         lookup_ = Lookup {};
+        catalog_ = Catalog {};
+        pendingCatalog_ = false;
     }
 
     wake_.notify_all();
@@ -127,6 +129,31 @@ void Client::clearLookup() {
     pendingLookup_.reset();
 }
 
+void Client::fetchCatalog() {
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+
+        // Already have it, or already asking. The table only changes when
+        // someone adds an item, which is not something worth re-checking every
+        // time a range field is touched.
+        if (catalog_.state == Catalog::State::Ready ||
+            catalog_.state == Catalog::State::Pending) {
+            return;
+        }
+
+        catalog_.state = Catalog::State::Pending;
+        catalog_.error.clear();
+        pendingCatalog_ = true;
+    }
+
+    wake_.notify_all();
+}
+
+Catalog Client::catalog() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return catalog_;
+}
+
 Lookup Client::lookupResult() const {
     std::lock_guard<std::mutex> lock(mutex_);
     return lookup_;
@@ -142,14 +169,21 @@ void Client::run() {
         // Lookups first: someone is watching a spinner, whereas the health
         // poll is background.
         std::optional<std::string> pending;
+        bool wantCatalog = false;
 
         {
             std::lock_guard<std::mutex> lock(mutex_);
             pending.swap(pendingLookup_);
+            wantCatalog = pendingCatalog_;
+            pendingCatalog_ = false;
         }
 
         if (pending) {
             runLookup(*pending);
+        }
+
+        if (wantCatalog) {
+            runCatalog();
         }
 
         pollHealth();
@@ -159,7 +193,9 @@ void Client::run() {
         // Predicated on both, so neither a stop nor a lookup waits out the
         // remaining interval.
         wake_.wait_for(lock, kPollInterval, [this] {
-            return !running_.load() || pendingLookup_.has_value();
+            return !running_.load() ||
+                   pendingLookup_.has_value() ||
+                   pendingCatalog_;
         });
     }
 }
@@ -216,6 +252,67 @@ void Client::pollHealth() {
     // across polls rather than reset to false here.
     next.unauthorized = snapshot_.unauthorized;
     snapshot_ = std::move(next);
+}
+
+void Client::runCatalog() {
+    std::string baseUrl;
+    std::string token;
+
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        baseUrl = baseUrl_;
+        token = token_;
+    }
+
+    Catalog result;
+    result.state = Catalog::State::Failed;
+
+    if (baseUrl.empty()) {
+        result.error = "No claws URL configured. Set one in Settings.";
+    } else {
+        const http::Response response =
+            http::get(http::join(baseUrl, "/items"), token);
+
+        if (!response.transportOk) {
+            result.error = response.error;
+        } else if (response.status == 401 || response.status == 403) {
+            result.error =
+                "claws rejected the token. It must match claws.yaml's token.";
+        } else if (response.status != 200) {
+            result.error =
+                "claws returned HTTP " + std::to_string(response.status);
+        } else {
+            try {
+                const json data = json::parse(response.body);
+
+                if (!data.is_array()) {
+                    throw json::type_error::create(
+                        302, "expected an array of items", &data);
+                }
+
+                for (const json& row : data) {
+                    const std::string sku = str(row, "SKU");
+
+                    if (!sku.empty()) {
+                        result.names[sku] = str(row, "NAME");
+                    }
+                }
+
+                result.state = Catalog::State::Ready;
+            } catch (const json::exception& e) {
+                result.error =
+                    std::string("claws did not return JSON: ") + e.what();
+            }
+        }
+    }
+
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    if (result.state == Catalog::State::Ready) {
+        snapshot_.unauthorized = false;
+    }
+
+    catalog_ = std::move(result);
 }
 
 void Client::runLookup(const std::string& sku) {

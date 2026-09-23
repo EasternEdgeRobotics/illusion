@@ -3,6 +3,7 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <map>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -175,8 +176,19 @@ public:
     // UI prevents by disabling the button while one is pending.
     void submitPrint(PrintRequest request);
 
-    // POST /print/barcodes -- one barcode label per SKU in [lower, upper].
-    void submitBarcodes(int lower, int upper);
+    // POST /print/barcodes -- one label per SKU in [lower, upper].
+    //
+    // The style must be one that renders the SKU; lipgloss refuses the rest,
+    // since a range of labels that do not show their SKU would be identical.
+    //
+    // line1/line2 are the same on every label of the run and are required
+    // exactly when the style has a cell for them. line1BySku overrides them
+    // per SKU, which is how a range of items that already exist each carry
+    // their own name -- resolved against claws by the caller, since lipgloss
+    // knows nothing about inventory.
+    void submitBarcodes(int lower, int upper, std::string style,
+                        std::string line1, std::string line2,
+                        std::map<std::string, std::string> line1BySku);
 
     // POST /queue/resume -- restarts a queue lipgloss paused because the
     // printer needed attention. Reported through actionResult() like a print,
@@ -212,6 +224,7 @@ private:
         PrintRequest print;
         int lower = 0;
         int upper = 0;
+        std::map<std::string, std::string> line1BySku;
     };
 
     void run();

@@ -31,6 +31,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <map>
 #include <string>
 
 namespace fs = std::filesystem;
@@ -91,6 +92,12 @@ struct PrintForm {
     // Latched once per session. Without it, anything that clears the preview
     // would bring the example back after the user had moved on from it.
     bool exampleRequested = false;
+
+    // Something changed the label but the form was not printable yet, so the
+    // refresh is owed rather than done. Survives frames, unlike the local
+    // `changed` flag, which is why filling in the last field of a range
+    // finally produces a preview.
+    bool previewStale = false;
 
     // Range mode: one label per SKU across a span, instead of one label.
     // Swaps out most of the form, so it is a mode rather than a second panel.
@@ -317,6 +324,40 @@ std::string resolveStyle(
     }
 
     return name;
+}
+
+// The SKU lipgloss will render for a given number in a range. Mirrors the
+// f"EER-{number:06d}" in print_barcodes, so a name looked up under this key
+// lands on the label that number produces.
+std::string skuForNumber(int number) {
+    char buffer[32];
+    std::snprintf(buffer, sizeof(buffer), "EER-%06d", number);
+    return buffer;
+}
+
+// What one label of a range should say. claws's name for the SKU, or the SKU
+// itself when it has none -- a bin whose item was never added still gets a
+// label that identifies it rather than a blank line or a failed job.
+std::string rangeName(claws::Client& client, const std::string& sku) {
+    const claws::Catalog catalog = client.catalog();
+    const auto it = catalog.names.find(sku);
+
+    if (it != catalog.names.end() && !it->second.empty()) {
+        return it->second;
+    }
+
+    return sku;
+}
+
+// The style name a range should send.
+//
+// Same resolution as a single print, but with no text to go on: a range has no
+// line 2, so the styles that choose between a one- and two-line variant always
+// take the one-line one. lipgloss fills whatever text cells remain with the
+// SKU itself.
+std::string rangeStyle(const Style& style) {
+    std::string line2;
+    return resolveStyle(style, "", line2);
 }
 
 // Why the Print button is disabled, or nullptr when it is not. lipgloss checks
@@ -643,9 +684,10 @@ lipgloss::PrintRequest buildRequest(const Style& style) {
 // looks.
 std::string requestSignature(const Style& style) {
     if (g_print.rangeMode) {
-        // A range's preview is only ever its first label, so that is the only
-        // field that changes what is shown.
-        return std::string("range\x1f") + g_print.rangeFrom;
+        // A range's preview is only ever its first label, so the style and
+        // that one SKU are the only things that change what is shown.
+        return "range\x1f" + rangeStyle(style) + '\x1f' + g_print.rangeFrom +
+               '\x1f' + g_print.line2;
     }
 
     const lipgloss::PrintRequest request = buildRequest(style);
@@ -681,13 +723,25 @@ void submitExamplePreview(lipgloss::Client& client) {
 
 // Asks for whatever the form currently describes, and records what it was
 // asked for. Both modes go through here so every caller stays consistent.
-void submitPreview(lipgloss::Client& client, const Style& style) {
+void submitPreview(lipgloss::Client& client, claws::Client& claws,
+                   const Style& style) {
     if (g_print.rangeMode) {
         // Only the first label of the run: they differ solely by SKU, so one
         // is representative and asking for all of them would be silly.
+        //
+        // The text is the caller's and identical across the run, so the only
+        // thing standing in for the rest of the range is the first SKU.
+        const std::string sku = cleanSku(g_print.rangeFrom);
+
         lipgloss::PrintRequest request;
-        request.style = "slim_barcode";
-        request.sku = cleanSku(g_print.rangeFrom);
+        request.style = rangeStyle(style);
+        request.sku = sku;
+        request.line2 = style.usesLine2 ? g_print.line2 : "";
+
+        if (style.needsLine1) {
+            request.line1 = rangeName(claws, sku);
+        }
+
         client.submitPreview(request);
     } else {
         client.submitPreview(buildRequest(style));
@@ -832,6 +886,14 @@ void drawPrint(
 
     if (ImGui::BeginCombo("##style", kStyles[g_print.styleIndex].label)) {
         for (int i = 0; i < kStyleCount; ++i) {
+            // A range prints one label per SKU, so a style that renders no SKU
+            // would produce the same label every time. lipgloss refuses those
+            // outright; leaving them out of the list is how that is said before
+            // the round trip rather than after it.
+            if (g_print.rangeMode && !kStyles[i].needsSku) {
+                continue;
+            }
+
             const bool selected = i == g_print.styleIndex;
 
             if (ImGui::Selectable(kStyles[i].label, selected)) {
@@ -876,6 +938,70 @@ void drawPrint(
 
         // Not folded into `changed`: the last SKU does not alter the first
         // label, which is all the preview ever shows for a range.
+
+        // Text, when the style has somewhere to put it, comes from claws --
+        // one name per SKU rather than one string for the run. That is the
+        // point of range printing: add a batch of items, then label them all
+        // without visiting each SKU by hand.
+        //
+        // Nothing is drawn when the style has no text cell, so picking Barcode
+        // keeps the range form down to the three rows it needs.
+        if (style.needsLine1) {
+            clawsClient.fetchCatalog();
+
+            const claws::Catalog catalog = clawsClient.catalog();
+
+            switch (catalog.state) {
+            case claws::Catalog::State::Idle:
+            case claws::Catalog::State::Pending:
+                ImGui::TextDisabled("Loading item names from claws...");
+                break;
+
+            case claws::Catalog::State::Failed:
+                ImGui::PushTextWrapPos(0.0f);
+                ImGui::TextColored(kBad, "%s", catalog.error.c_str());
+                ImGui::PopTextWrapPos();
+                break;
+
+            case claws::Catalog::State::Ready: {
+                // How much of the range claws actually knows. A gap is worth
+                // seeing before printing rather than after: it means a SKU in
+                // the span was never added, and that label will fall back to
+                // showing its own SKU.
+                int known = 0;
+                int total = 0;
+
+                int from = 0;
+                int to = 0;
+
+                if (skuNumber(g_print.rangeFrom, from) &&
+                    skuNumber(g_print.rangeTo, to) && to >= from) {
+                    for (int n = from; n <= to; ++n) {
+                        ++total;
+
+                        if (catalog.names.count(skuForNumber(n))) {
+                            ++known;
+                        }
+                    }
+                }
+
+                if (total == 0) {
+                    ImGui::TextDisabled("%zu items known to claws.",
+                                        catalog.names.size());
+                } else if (known == total) {
+                    ImGui::TextColored(kGood, "%d of %d named by claws.",
+                                       known, total);
+                } else {
+                    ImGui::TextColored(
+                        kWarn,
+                        "%d of %d named by claws; the rest will show their SKU.",
+                        known, total);
+                }
+
+                break;
+            }
+            }
+        }
     } else {
         // ---- SKU, with the claws toggle beside it ----
         //
@@ -973,6 +1099,18 @@ void drawPrint(
 
     // ---- The mode switch ----
     if (ImGui::Checkbox("Range print", &g_print.rangeMode)) {
+        // The style list shrinks on the way in, so a selection that is no
+        // longer offered has to move -- otherwise the combo would show a style
+        // that cannot be picked again once left.
+        if (g_print.rangeMode && !kStyles[g_print.styleIndex].needsSku) {
+            for (int i = 0; i < kStyleCount; ++i) {
+                if (kStyles[i].needsSku) {
+                    g_print.styleIndex = i;
+                    break;
+                }
+            }
+        }
+
         // The preview on screen describes the other mode's fields, so it is
         // dropped back to the blank rather than left showing the wrong label.
         lipglossClient.clearPreview();
@@ -1008,21 +1146,57 @@ void drawPrint(
 
     const bool disabled = pending || blocker != nullptr || !snapshot.reachable;
 
-    // Automatic refresh. Gated on the request being valid and on the fields
-    // having actually moved since the showing preview was made -- leaving a
-    // box without changing anything asks lipgloss for nothing.
-    if (changed &&
-        blocker == nullptr &&
-        snapshot.reachable &&
-        requestSignature(style) != g_print.previewOf) {
-        submitPreview(lipglossClient, style);
+    // Automatic refresh.
+    //
+    // The change is remembered rather than acted on immediately, because the
+    // moment something changes is often a moment the request is not yet
+    // printable: picking a style and then filling in the range leaves every
+    // edit blocked on a field that has not been typed yet. Dropping `changed`
+    // on those frames meant the last field completed the form but triggered
+    // nothing, and the preview sat on the previous style forever.
+    //
+    // So the flag survives until it can be honoured -- which also covers
+    // editing while lipgloss is down and having it catch up once it returns.
+    if (changed) {
+        g_print.previewStale = true;
+    }
+
+    if (g_print.previewStale && blocker == nullptr && snapshot.reachable) {
+        // Still checked against what is showing: completing a form without
+        // having altered what the label says asks lipgloss for nothing.
+        if (requestSignature(style) != g_print.previewOf) {
+            submitPreview(lipglossClient, clawsClient, style);
+        }
+
+        g_print.previewStale = false;
     }
 
     ImGui::BeginDisabled(disabled);
 
     if (ImGui::Button("Print")) {
         if (g_print.rangeMode) {
-            lipglossClient.submitBarcodes(rangeFrom, rangeTo);
+            // One entry per SKU in the span. Unknown SKUs are given their own
+            // SKU as the text, so a gap in the range still prints a label that
+            // identifies its bin rather than failing the whole job.
+            std::map<std::string, std::string> names;
+
+            if (style.needsLine1) {
+                const claws::Catalog catalog = clawsClient.catalog();
+
+                for (int n = rangeFrom; n <= rangeTo; ++n) {
+                    const std::string sku = skuForNumber(n);
+                    const auto it = catalog.names.find(sku);
+
+                    names[sku] = it != catalog.names.end() && !it->second.empty()
+                        ? it->second
+                        : sku;
+                }
+            }
+
+            lipglossClient.submitBarcodes(
+                rangeFrom, rangeTo, rangeStyle(style),
+                "", style.usesLine2 ? g_print.line2 : "",
+                std::move(names));
         } else {
             lipglossClient.submitPrint(buildRequest(style));
         }
@@ -1072,14 +1246,6 @@ void drawPrint(
     }
 
     if (g_print.rangeMode) {
-        // The style selector is above because the layout is meant to outlive
-        // this limitation, but POST /print/barcodes takes no style and renders
-        // slim_barcode itself. Said plainly rather than letting the selector
-        // imply a choice that does not reach the wire yet.
-        ImGui::TextDisabled(
-            "Range printing always uses Barcode for now; the style above is "
-            "not sent.");
-
         if (action.state == lipgloss::ActionResult::State::Ok) {
             ImGui::TextColored(kGood, "Job %lld queued.", action.jobId);
         } else if (action.state == lipgloss::ActionResult::State::Failed) {
