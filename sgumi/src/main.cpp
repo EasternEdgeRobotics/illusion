@@ -660,8 +660,8 @@ std::string requestSignature(const Style& style) {
 // exactly what the app produces and the QR code actually scans. The SKU is not
 // arbitrary.
 constexpr const char* kExampleStyle = "label_1_line_qr";
-constexpr const char* kExampleSku = "EER-120607";
-constexpr const char* kExampleLine1 = "Example Text!";
+constexpr const char* kExampleSku = "PTN-120607";
+constexpr const char* kExampleLine1 = "Super Graphic Ultra Modern Interface";
 
 void submitExamplePreview(lipgloss::Client& client) {
     lipgloss::PrintRequest request;
