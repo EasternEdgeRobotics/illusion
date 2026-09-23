@@ -74,6 +74,8 @@ add_subdirectory(third_party)
 add_executable(
   sgumi
   src/main.cpp
+  src/Claws.cpp
+  src/Http.cpp
   src/Lipgloss.cpp
   src/Paths.cpp
   src/Theme.cpp

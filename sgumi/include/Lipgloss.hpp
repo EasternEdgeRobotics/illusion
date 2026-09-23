@@ -4,6 +4,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <thread>
 #include <vector>
@@ -11,7 +12,7 @@
 // Client for the lipgloss print service.
 //
 // Mirrors LipglossClient in packages/illusion-core/src/illusion_core/clients.py,
-// which is the authority on the wire format -- when an endpoint changes there,
+// which is the authority on the wire format, when an endpoint changes there,
 // it changes here. Only the two read endpoints are implemented so far; the
 // print side follows once the queue view is real.
 //
@@ -69,6 +70,46 @@ struct Snapshot {
     std::chrono::steady_clock::time_point polled {};
 };
 
+// lipgloss rejects anything above this with a 422 (MAX_COPIES in
+// packages/lipgloss/src/lipgloss/print_queue.py). Mirrored so the UI can clamp
+// rather than let a request be refused after the fact.
+constexpr int kMaxCopies = 100;
+
+// What POST /print takes. The style must already be resolved -- lipgloss knows
+// label_1_line and label_2_line, not the "label" the user picked; see
+// styles::resolve in main.cpp for where that happens.
+struct PrintRequest {
+    std::string style;
+    std::string sku;
+    std::string line1;
+    std::string line2;
+    int copies = 1;
+};
+
+// The outcome of the last submitted print. One value rather than a list: the
+// UI submits one at a time and only reports the most recent.
+struct ActionResult {
+    enum class State {
+        Idle,
+        Pending,
+        Ok,
+        Failed,
+    };
+
+    State state = State::Idle;
+
+    // lipgloss's own wording where it gave any -- it explains queue state
+    // better than anything invented here would.
+    std::string message;
+
+    long long jobId = -1;
+
+    // A job accepted onto a paused queue is not printing. lipgloss reports
+    // this separately for exactly that reason, so "queued" is not mistaken for
+    // "printed".
+    bool queuePaused = false;
+};
+
 class Client {
 public:
     Client();
@@ -93,13 +134,38 @@ public:
     // Wakes the worker without changing anything. The Refresh button.
     void refresh();
 
-    // Thread-safe. Returns a copy, which is what lets the caller hold it for a
-    // whole frame without blocking the worker.
+    // Queues a print. Returns immediately; watch actionResult() for the
+    // outcome. A second call before the first finishes replaces it, which the
+    // UI prevents by disabling the button while one is pending.
+    void submitPrint(PrintRequest request);
+
+    // POST /print/barcodes -- one barcode label per SKU in [lower, upper].
+    void submitBarcodes(int lower, int upper);
+
+    void clearAction();
+
+    // All thread-safe, all return copies, which is what lets the caller hold
+    // one for a whole frame without blocking the worker.
     Snapshot snapshot() const;
+    ActionResult actionResult() const;
 
 private:
+    // One slot, not a queue: the UI submits one action at a time.
+    struct PendingAction {
+        enum class Kind {
+            Print,
+            Barcodes,
+        };
+
+        Kind kind = Kind::Print;
+        PrintRequest print;
+        int lower = 0;
+        int upper = 0;
+    };
+
     void run();
     void pollOnce();
+    void runAction(const PendingAction& action);
 
     mutable std::mutex mutex_;
     std::condition_variable wake_;
@@ -107,6 +173,9 @@ private:
     std::string baseUrl_;
     std::string token_;
     Snapshot snapshot_;
+
+    ActionResult action_;
+    std::optional<PendingAction> pendingAction_;
 
     std::atomic<bool> running_ { false };
     std::thread worker_;

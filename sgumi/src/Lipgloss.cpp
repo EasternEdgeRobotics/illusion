@@ -1,9 +1,10 @@
 #include "Lipgloss.hpp"
 
-#include <curl/curl.h>
+#include "Http.hpp"
+
 #include <nlohmann/json.hpp>
 
-#include <chrono>
+#include <algorithm>
 #include <utility>
 
 using json = nlohmann::json;
@@ -11,87 +12,12 @@ using json = nlohmann::json;
 namespace lipgloss {
 namespace {
 
-// Long enough that a busy Niimbot driver does not read as "down", short enough
-// that the UI is not stuck on a stale snapshot for a whole poll cycle.
-constexpr long kTimeoutSeconds = 5;
-
 constexpr auto kPollInterval = std::chrono::seconds(1);
 
-size_t writeToString(char* data, size_t size, size_t count, void* userp) {
-    const size_t total = size * count;
-    static_cast<std::string*>(userp)->append(data, total);
-    return total;
-}
-
-struct Response {
-    bool transportOk = false;
-    long status = 0;
-    std::string body;
-    std::string error;
-};
-
-// One GET. A fresh handle per call: these happen once a second on a worker
-// thread, so handle reuse would buy nothing measurable and cost the rule that
-// nothing here is shared between threads.
-Response get(const std::string& url, const std::string& token) {
-    Response response;
-
-    CURL* curl = curl_easy_init();
-
-    if (!curl) {
-        response.error = "curl_easy_init failed";
-        return response;
-    }
-
-    curl_slist* headers = nullptr;
-
-    if (!token.empty()) {
-        // lipgloss checks a bearer token on everything except /health; see
-        // require_token in packages/lipgloss/src/lipgloss/service.py.
-        const std::string authorization = "Authorization: Bearer " + token;
-        headers = curl_slist_append(headers, authorization.c_str());
-    }
-
-    curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, writeToString);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response.body);
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, kTimeoutSeconds);
-    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, kTimeoutSeconds);
-    curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
-    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
-
-    if (headers) {
-        curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
-    }
-
-    const CURLcode result = curl_easy_perform(curl);
-
-    if (result == CURLE_OK) {
-        response.transportOk = true;
-        curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &response.status);
-    } else {
-        response.error = curl_easy_strerror(result);
-    }
-
-    if (headers) {
-        curl_slist_free_all(headers);
-    }
-
-    curl_easy_cleanup(curl);
-    return response;
-}
-
-// Trailing slashes would produce "http://host:8081//health", which works but
-// looks like a bug in every log line it appears in.
-std::string join(const std::string& baseUrl, const char* path) {
-    std::string base = baseUrl;
-
-    while (!base.empty() && base.back() == '/') {
-        base.pop_back();
-    }
-
-    return base + path;
-}
+// What lipgloss records as having asked for a job, and what the queue table
+// shows in its Source column. The kiosk sends "terminal" and the bot sends
+// "discord:<user>", so jobs from here are distinguishable from both.
+constexpr const char* kSource = "sgumi";
 
 // The service returns JSON nulls for unset config -- printer_port is null when
 // lipgloss.printer.port was left blank -- and json::get<std::string> throws on
@@ -116,19 +42,24 @@ int integer(const json& data, const char* key) {
     return data[key].get<int>();
 }
 
+// lipgloss's PrintRequest treats an absent field and an empty string
+// differently: missing_values() checks falsiness, so "" and null both read as
+// absent, but sending null is what the Python clients do and keeps the two
+// callers byte-comparable in the service log.
+void putOrNull(json& out, const char* key, const std::string& value) {
+    if (value.empty()) {
+        out[key] = nullptr;
+    } else {
+        out[key] = value;
+    }
+}
+
 }  // namespace
 
-Client::Client() {
-    // Global init is documented as not thread-safe and as being called
-    // implicitly by the first curl_easy_init() if nobody does it first. Doing
-    // it here means it happens on the main thread during construction, before
-    // the worker exists, rather than racing inside the first poll.
-    curl_global_init(CURL_GLOBAL_DEFAULT);
-}
+Client::Client() = default;
 
 Client::~Client() {
     stop();
-    curl_global_cleanup();
 }
 
 void Client::start() {
@@ -170,24 +101,175 @@ void Client::refresh() {
     wake_.notify_all();
 }
 
+void Client::submitPrint(PrintRequest request) {
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+
+        action_ = ActionResult {};
+        action_.state = ActionResult::State::Pending;
+
+        PendingAction pending;
+        pending.kind = PendingAction::Kind::Print;
+        pending.print = std::move(request);
+        pendingAction_ = std::move(pending);
+    }
+
+    wake_.notify_all();
+}
+
+void Client::submitBarcodes(int lower, int upper) {
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+
+        action_ = ActionResult {};
+        action_.state = ActionResult::State::Pending;
+
+        PendingAction pending;
+        pending.kind = PendingAction::Kind::Barcodes;
+        pending.lower = lower;
+        pending.upper = upper;
+        pendingAction_ = std::move(pending);
+    }
+
+    wake_.notify_all();
+}
+
+void Client::clearAction() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    action_ = ActionResult {};
+}
+
 Snapshot Client::snapshot() const {
     std::lock_guard<std::mutex> lock(mutex_);
     return snapshot_;
 }
 
+ActionResult Client::actionResult() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return action_;
+}
+
 void Client::run() {
     while (running_.load()) {
+        // Actions before the poll: someone is watching a button, whereas the
+        // poll is background. Running it first also means the poll that
+        // follows already reflects the job just queued.
+        std::optional<PendingAction> pending;
+
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            pending.swap(pendingAction_);
+        }
+
+        if (pending) {
+            runAction(*pending);
+        }
+
         pollOnce();
 
         std::unique_lock<std::mutex> lock(mutex_);
 
-        // Predicate on running_ so stop() is not waited out: the notify in
-        // stop() lands here, the predicate is already false, and the worker
-        // leaves immediately rather than after the remaining interval.
+        // Predicated on both, so neither a stop nor a submitted job waits out
+        // the remaining interval.
         wake_.wait_for(lock, kPollInterval, [this] {
-            return !running_.load();
+            return !running_.load() || pendingAction_.has_value();
         });
     }
+}
+
+void Client::runAction(const PendingAction& action) {
+    std::string baseUrl;
+    std::string token;
+
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        baseUrl = baseUrl_;
+        token = token_;
+    }
+
+    ActionResult result;
+
+    if (baseUrl.empty()) {
+        result.state = ActionResult::State::Failed;
+        result.message = "No lipgloss URL configured.";
+
+        std::lock_guard<std::mutex> lock(mutex_);
+        action_ = std::move(result);
+        return;
+    }
+
+    std::string path;
+    json body;
+
+    if (action.kind == PendingAction::Kind::Print) {
+        path = "/print";
+
+        body["style"] = action.print.style;
+        putOrNull(body, "sku", action.print.sku);
+        putOrNull(body, "line_1", action.print.line1);
+        putOrNull(body, "line_2", action.print.line2);
+        body["copies"] = std::clamp(action.print.copies, 1, kMaxCopies);
+        body["source"] = kSource;
+    } else {
+        path = "/print/barcodes";
+
+        body["lower"] = action.lower;
+        body["upper"] = action.upper;
+        body["source"] = kSource;
+    }
+
+    const http::Response response =
+        http::post(http::join(baseUrl, path.c_str()), token, body.dump());
+
+    if (!response.transportOk) {
+        result.state = ActionResult::State::Failed;
+        result.message = response.error;
+    } else if (response.status == 401 || response.status == 403) {
+        result.state = ActionResult::State::Failed;
+        result.message = "lipgloss rejected the token.";
+    } else if (response.status == 422) {
+        // FastAPI's validation error. The body names the offending field, and
+        // that detail is far more useful than "422" -- a style needing a SKU
+        // that did not get one lands here.
+        result.state = ActionResult::State::Failed;
+        result.message = "lipgloss refused the request: " + response.body;
+    } else if (response.status != 200) {
+        result.state = ActionResult::State::Failed;
+        result.message =
+            "lipgloss returned HTTP " + std::to_string(response.status);
+    } else {
+        try {
+            const json data = json::parse(response.body);
+
+            result.message = str(data, "message");
+            result.queuePaused = data.value("paused", false);
+
+            if (data.contains("job_id") && data["job_id"].is_number_integer()) {
+                result.jobId = data["job_id"].get<long long>();
+            }
+
+            // lipgloss answers 200 with a null job_id and an explanatory
+            // message when it declines a job -- an empty barcode range, or a
+            // style missing a field. A null id is therefore a refusal, not a
+            // success with no id.
+            result.state = result.jobId >= 0
+                ? ActionResult::State::Ok
+                : ActionResult::State::Failed;
+
+            if (result.message.empty()) {
+                result.message = result.jobId >= 0
+                    ? "Queued."
+                    : "lipgloss declined the job without saying why.";
+            }
+        } catch (const json::exception& e) {
+            result.state = ActionResult::State::Failed;
+            result.message =
+                std::string("lipgloss did not return JSON: ") + e.what();
+        }
+    }
+
+    std::lock_guard<std::mutex> lock(mutex_);
+    action_ = std::move(result);
 }
 
 void Client::pollOnce() {
@@ -213,7 +295,7 @@ void Client::pollOnce() {
     // Health first, and unauthenticated. It is the call that distinguishes
     // "the service is not there" from "the service is there and does not like
     // our token", which are the two failures worth telling apart on a kiosk.
-    const Response health = get(join(baseUrl, "/health"), "");
+    const http::Response health = http::get(http::join(baseUrl, "/health"), "");
 
     if (!health.transportOk) {
         next.error = health.error;
@@ -257,7 +339,7 @@ void Client::pollOnce() {
         return;
     }
 
-    const Response queue = get(join(baseUrl, "/queue"), token);
+    const http::Response queue = http::get(http::join(baseUrl, "/queue"), token);
 
     if (!queue.transportOk) {
         // Health answered a moment ago, so this is a stall rather than an
