@@ -107,6 +107,7 @@ void Client::submitPrint(PrintRequest request) {
 
         action_ = ActionResult {};
         action_.state = ActionResult::State::Pending;
+        action_.kind = ActionResult::Kind::Print;
 
         PendingAction pending;
         pending.kind = PendingAction::Kind::Print;
@@ -123,11 +124,28 @@ void Client::submitBarcodes(int lower, int upper) {
 
         action_ = ActionResult {};
         action_.state = ActionResult::State::Pending;
+        action_.kind = ActionResult::Kind::Barcodes;
 
         PendingAction pending;
         pending.kind = PendingAction::Kind::Barcodes;
         pending.lower = lower;
         pending.upper = upper;
+        pendingAction_ = std::move(pending);
+    }
+
+    wake_.notify_all();
+}
+
+void Client::submitResume() {
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+
+        action_ = ActionResult {};
+        action_.state = ActionResult::State::Pending;
+        action_.kind = ActionResult::Kind::Resume;
+
+        PendingAction pending;
+        pending.kind = PendingAction::Kind::Resume;
         pendingAction_ = std::move(pending);
     }
 
@@ -234,6 +252,21 @@ void Client::runAction(const PendingAction& action) {
 
     ActionResult result;
 
+    // Carried across from the request. The result is built fresh here, so
+    // without this it would default to Print and a resume would be reported as
+    // a job that never existed.
+    switch (action.kind) {
+    case PendingAction::Kind::Print:
+        result.kind = ActionResult::Kind::Print;
+        break;
+    case PendingAction::Kind::Barcodes:
+        result.kind = ActionResult::Kind::Barcodes;
+        break;
+    case PendingAction::Kind::Resume:
+        result.kind = ActionResult::Kind::Resume;
+        break;
+    }
+
     if (baseUrl.empty()) {
         result.state = ActionResult::State::Failed;
         result.message = "No lipgloss URL configured.";
@@ -255,12 +288,17 @@ void Client::runAction(const PendingAction& action) {
         putOrNull(body, "line_2", action.print.line2);
         body["copies"] = std::clamp(action.print.copies, 1, kMaxCopies);
         body["source"] = kSource;
-    } else {
+    } else if (action.kind == PendingAction::Kind::Barcodes) {
         path = "/print/barcodes";
 
         body["lower"] = action.lower;
         body["upper"] = action.upper;
         body["source"] = kSource;
+    } else {
+        // Resume takes no body at all. FastAPI is content with an empty JSON
+        // object on a POST that declares no model.
+        path = "/queue/resume";
+        body = json::object();
     }
 
     const http::Response response =
@@ -293,18 +331,29 @@ void Client::runAction(const PendingAction& action) {
                 result.jobId = data["job_id"].get<long long>();
             }
 
-            // lipgloss answers 200 with a null job_id and an explanatory
-            // message when it declines a job -- an empty barcode range, or a
-            // style missing a field. A null id is therefore a refusal, not a
-            // success with no id.
-            result.state = result.jobId >= 0
-                ? ActionResult::State::Ok
-                : ActionResult::State::Failed;
+            if (action.kind == PendingAction::Kind::Resume) {
+                // Resume carries no job_id -- there is no job. A 200 is the
+                // whole answer, and the message is lipgloss's own account of
+                // what the queue did.
+                result.state = ActionResult::State::Ok;
 
-            if (result.message.empty()) {
-                result.message = result.jobId >= 0
-                    ? "Queued."
-                    : "lipgloss declined the job without saying why.";
+                if (result.message.empty()) {
+                    result.message = "Queue resumed.";
+                }
+            } else {
+                // lipgloss answers 200 with a null job_id and an explanatory
+                // message when it declines a job -- an empty barcode range, or
+                // a style missing a field. A null id is therefore a refusal,
+                // not a success with no id.
+                result.state = result.jobId >= 0
+                    ? ActionResult::State::Ok
+                    : ActionResult::State::Failed;
+
+                if (result.message.empty()) {
+                    result.message = result.jobId >= 0
+                        ? "Queued."
+                        : "lipgloss declined the job without saying why.";
+                }
             }
         } catch (const json::exception& e) {
             result.state = ActionResult::State::Failed;

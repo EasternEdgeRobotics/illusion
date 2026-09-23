@@ -816,8 +816,6 @@ void drawPrint(
     claws::Client& clawsClient,
     const lipgloss::Snapshot& snapshot)
 {
-    const Style& style = kStyles[g_print.styleIndex];
-
     // Set by anything that changes how the label looks. Checked once at the
     // end, where the request is known to be valid, so the preview keeps up
     // without the button being pressed.
@@ -832,7 +830,7 @@ void drawPrint(
     ImGui::SetNextItemWidth(
         g_print.rangeMode ? fieldWidth() : halfFieldWidth());
 
-    if (ImGui::BeginCombo("##style", style.label)) {
+    if (ImGui::BeginCombo("##style", kStyles[g_print.styleIndex].label)) {
         for (int i = 0; i < kStyleCount; ++i) {
             const bool selected = i == g_print.styleIndex;
 
@@ -848,6 +846,13 @@ void drawPrint(
 
         ImGui::EndCombo();
     }
+
+    // Bound *after* the combo, not before it. A reference taken first would
+    // still point at the previous style once the combo had changed the index,
+    // so the automatic refresh would re-render the old label, find the
+    // signature unchanged, and decide there was nothing to do -- which is
+    // exactly why changing the style used to leave the preview alone.
+    const Style& style = kStyles[g_print.styleIndex];
 
     if (!g_print.rangeMode) {
         ImGui::SameLine();
@@ -1039,6 +1044,12 @@ void drawPrint(
     } else {
         switch (action.state) {
         case lipgloss::ActionResult::State::Ok:
+            if (action.kind == lipgloss::ActionResult::Kind::Resume) {
+                // Reported under the queue, not here. Without this the resume
+                // would land in the print status line as "Job -1 queued".
+                break;
+            }
+
             // A job accepted onto a paused queue is not printing, and saying
             // "queued" without that would be misleading.
             if (action.queuePaused) {
@@ -1079,7 +1090,7 @@ void drawPrint(
     }
 }
 
-void drawQueue(const lipgloss::Snapshot& snapshot) {
+void drawQueue(const lipgloss::Snapshot& snapshot, lipgloss::Client& client) {
     if (!snapshot.reachable || snapshot.unauthorized) {
         ImGui::TextDisabled("Queue unavailable.");
 
@@ -1103,6 +1114,42 @@ void drawQueue(const lipgloss::Snapshot& snapshot) {
         ImGui::PushTextWrapPos(0.0f);
         ImGui::TextDisabled("%s", snapshot.description.c_str());
         ImGui::PopTextWrapPos();
+    }
+
+    // Only while paused. lipgloss stops the queue when the printer needs
+    // attention -- out of labels, lid open, unplugged -- and nothing starts
+    // printing again until someone says the problem is dealt with. The reason
+    // is in the description above, so this is just the acknowledgement.
+    if (snapshot.paused) {
+        const lipgloss::ActionResult action = client.actionResult();
+        const bool pending =
+            action.state == lipgloss::ActionResult::State::Pending;
+
+        ImGui::Spacing();
+        ImGui::BeginDisabled(pending);
+
+        if (ImGui::Button("Resume queue")) {
+            client.submitResume();
+        }
+
+        ImGui::EndDisabled();
+
+        if (pending) {
+            ImGui::SameLine();
+            ImGui::TextDisabled("Resuming...");
+        } else if (action.kind == lipgloss::ActionResult::Kind::Resume &&
+                   action.state != lipgloss::ActionResult::State::Idle) {
+            // lipgloss answers 200 even when it could not resume -- "still
+            // unable to print, the queue is staying paused" is a successful
+            // request with an unsuccessful outcome. Its own wording is the
+            // only thing that tells the two apart, so it is shown verbatim,
+            // and the colour comes from whether the queue is actually still
+            // paused rather than from the HTTP status.
+            ImGui::Spacing();
+            ImGui::PushTextWrapPos(0.0f);
+            ImGui::TextColored(kWarn, "%s", action.message.c_str());
+            ImGui::PopTextWrapPos();
+        }
     }
 
     if (snapshot.jobs.empty()) {
@@ -1344,7 +1391,7 @@ int runSgumi() {
 
             ImGui::Spacing();
             ImGui::SeparatorText("Print queue");
-            drawQueue(snapshot);
+            drawQueue(snapshot, client);
         }
 
         ImGui::End();

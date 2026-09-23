@@ -96,7 +96,17 @@ struct ActionResult {
         Failed,
     };
 
+    // What the result describes. One slot serves every action, so without this
+    // the UI cannot word the outcome: a resume has no job id, and reporting it
+    // as "Job -1 queued" would be nonsense.
+    enum class Kind {
+        Print,
+        Barcodes,
+        Resume,
+    };
+
     State state = State::Idle;
+    Kind kind = Kind::Print;
 
     // lipgloss's own wording where it gave any -- it explains queue state
     // better than anything invented here would.
@@ -168,6 +178,11 @@ public:
     // POST /print/barcodes -- one barcode label per SKU in [lower, upper].
     void submitBarcodes(int lower, int upper);
 
+    // POST /queue/resume -- restarts a queue lipgloss paused because the
+    // printer needed attention. Reported through actionResult() like a print,
+    // since it is the same kind of "did that work?" question.
+    void submitResume();
+
     // POST /preview -- the label this request would print, as a PNG, printing
     // nothing. Takes the same fields; copies is ignored.
     //
@@ -190,6 +205,7 @@ private:
         enum class Kind {
             Print,
             Barcodes,
+            Resume,
         };
 
         Kind kind = Kind::Print;
