@@ -58,11 +58,21 @@ Seven styles, the same menu the bot's `/print` command offers. The boxes a style
 | Cable Label w/ SKU     | sku, line 1 | optional |
 | Cable Label w/ QR Code | sku, line 1 | —        |
 
-**Get line 1 from SKU** is on by default and fills line 1 with the item's name from claws. It fires on Enter or when you click away, so scanning a SKU fills the name without touching the mouse. A short SKU is padded like [`clean_sku`](../packages/illusion-core/src/illusion_core/helpers.py) pads it, so `421` finds `EER-000421`.
+**From claws** is on by default and fills line 1 with the item's name. It fires on Enter or when you click away, so scanning a SKU fills the name without touching the mouse. A short SKU is padded like [`clean_sku`](../packages/illusion-core/src/illusion_core/helpers.py) pads it, so `421` finds `EER-000421`.
+
+The SKU box follows that toggle rather than the style, so you can look an item up for a style that puts no SKU on the label. Only styles that use one actually send it.
 
 Jobs from here show a source of `sgumi` in the queue.
 
-**Barcode range** prints one label per SKU across a range, always `slim_barcode` — `POST /print/barcodes` takes no style. lipgloss refuses the job if the roll can't fit the whole run.
+### Preview
+The label at the top is rendered by lipgloss, so it is exactly what will print. It refreshes on its own whenever you leave a field, change the style, or a claws lookup fills line 1 — once per field, not per keystroke. There is no refresh button; if lipgloss was unreachable when something changed, the preview says so and updates on the next edit.
+
+Before anything has been previewed it shows an example label, which is also a real render rather than a drawing. If lipgloss isn't up yet you get a blank label outline instead.
+
+### Range print
+Toggling **Range print** swaps the form for a start and end SKU, printing one label per SKU across the span. Both boxes take either `EER-000421` or `421`.
+
+Always `slim_barcode` for now — `POST /print/barcodes` takes no style, so the style selector above it isn't sent. lipgloss refuses the job if the roll can't fit the whole run.
 
 ## Reading the status line
 `/health` is unauthenticated and `/queue` is not, which is deliberate over in lipgloss and is what lets the indicator tell three failures apart:
@@ -101,9 +111,9 @@ The four vendored checkouts under `third_party/` are pinned to the same commits 
 ## What's next
 In rough order:
 
-1. **Label preview.** `POST /preview` returns a PNG. `stb` is already vendored and wired into the build for exactly this.
-2. **Queue control.** `POST /queue/resume`, `POST /queue/clear` and `DELETE /queue/{id}`.
-3. **SSE.** `GET /events` replaces the one-second poll.
-4. **Printing an image.** `POST /print/image`, the one print endpoint SGUMI doesn't reach yet.
+1. **Queue control.** `POST /queue/resume`, `POST /queue/clear` and `DELETE /queue/{id}`.
+2. **SSE.** `GET /events` replaces the one-second poll.
+3. **Printing an image.** `POST /print/image`, the one print endpoint SGUMI doesn't reach yet.
+4. **A style for range printing.** Needs a `style` field on `BarcodeRangeRequest` first; only `slim_barcode` and `classic_barcode` need nothing but a SKU, so anything else also needs text the range can supply itself.
 
 [`clients.py`](../packages/illusion-core/src/illusion_core/clients.py) is the reference for every endpoint.

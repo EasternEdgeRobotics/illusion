@@ -25,7 +25,9 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <cerrno>
 #include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -81,9 +83,24 @@ struct PrintForm {
     // looking current.
     std::string previewOf;
 
-    // The barcode range printer, which shares nothing with the fields above.
-    int rangeLower = 1;
-    int rangeUpper = 1;
+    // Whether the picture on screen is the example rather than the form's own
+    // label. Suppresses the staleness note, which would otherwise fire
+    // immediately -- the example never matches the form.
+    bool previewIsExample = false;
+
+    // Latched once per session. Without it, anything that clears the preview
+    // would bring the example back after the user had moved on from it.
+    bool exampleRequested = false;
+
+    // Range mode: one label per SKU across a span, instead of one label.
+    // Swaps out most of the form, so it is a mode rather than a second panel.
+    bool rangeMode = false;
+
+    // Held as text, not numbers. The endpoint wants integers, but a SKU is
+    // what is printed on the bin and what a scanner types, so these accept
+    // either "EER-000421" or "421" and skuNumber() pulls the number out.
+    char rangeFrom[64] = "";
+    char rangeTo[64] = "";
 };
 
 PrintForm g_print;
@@ -469,29 +486,71 @@ void drawClawsInfo(const claws::Snapshot& snapshot) {
 // ---------------------------------------------------------------------------
 // Form layout
 //
-// ImGui puts a widget's label to its *right*, which reads badly in a form and
-// spends width on the side where a narrow screen has none. These two put the
-// label in a fixed left column instead, and cap the field so the whole row
-// fits a phone: 96 + 240 plus window padding lands inside a 390pt portrait
-// viewport, which is what the eventual iOS port has to live in.
+// ImGui puts a widget's label to its *right*, which reads badly in a form.
+// These put the label in a fixed left column instead, and are written so a row
+// can hold two label+field pairs -- the offset is measured from where each
+// label starts, not from the edge of the window, so the second pair on a row
+// lines up the same way the first does.
 // ---------------------------------------------------------------------------
 
-constexpr float kLabelWidth = 96.0f;
-constexpr float kFieldMaxWidth = 240.0f;
+constexpr float kLabelWidth = 76.0f;
+constexpr float kFieldMaxWidth = 220.0f;
 
-// Shrinks below the cap when the window is narrower, never below something
-// still usable -- a field clipped to nothing is worse than one that overflows.
+// One pair filling the row.
 float fieldWidth() {
     const float avail = ImGui::GetContentRegionAvail().x - kLabelWidth;
-    return std::min(std::max(avail, 90.0f), kFieldMaxWidth);
+    return std::min(std::max(avail, 80.0f), kFieldMaxWidth);
+}
+
+// One of two pairs sharing the row. Falls back to something usable rather than
+// going negative when the window is dragged narrow.
+float halfFieldWidth() {
+    const float avail = ImGui::GetContentRegionAvail().x;
+    const float perPair = (avail - ImGui::GetStyle().ItemSpacing.x) * 0.5f;
+    return std::min(std::max(perPair - kLabelWidth, 70.0f), kFieldMaxWidth);
 }
 
 // AlignTextToFramePadding so the label sits on the widget's baseline rather
-// than riding up against the top of its frame.
+// than riding up against the top of its frame. The cursor is then put a fixed
+// distance past where *this* label began, which is what lets a second pair on
+// the same row align like the first.
 void fieldLabel(const char* text) {
+    const float x = ImGui::GetCursorPosX();
+
     ImGui::AlignTextToFramePadding();
     ImGui::TextUnformatted(text);
-    ImGui::SameLine(kLabelWidth);
+    ImGui::SameLine();
+    ImGui::SetCursorPosX(x + kLabelWidth);
+}
+
+// A range endpoint takes plain numbers, but these boxes take SKUs, because a
+// SKU is what is printed on the bin and what a scanner types. Accepts either
+// form: "EER-000421" and "421" both give 421.
+bool skuNumber(const char* text, int& out) {
+    std::string value = text;
+
+    const size_t dash = value.find_last_of('-');
+
+    if (dash != std::string::npos) {
+        value = value.substr(dash + 1);
+    }
+
+    if (value.empty() ||
+        value.find_first_not_of("0123456789") != std::string::npos) {
+        return false;
+    }
+
+    // strtol rather than stoi: no exception to catch on a number too long to
+    // fit, which someone leaning on a keypad will produce eventually.
+    errno = 0;
+    const long parsed = std::strtol(value.c_str(), nullptr, 10);
+
+    if (errno != 0 || parsed < 0 || parsed > 999999) {
+        return false;
+    }
+
+    out = static_cast<int>(parsed);
+    return true;
 }
 
 // What claws said about the SKU in the box, and the fill of line 1.
@@ -565,7 +624,12 @@ lipgloss::PrintRequest buildRequest(const Style& style) {
 
     std::string line2 = g_print.line2;
     request.style = resolveStyle(style, g_print.line1, line2);
+
+    // Only when the style actually puts it on the label. The box can hold a
+    // SKU for a style that does not use one -- that is how claws is asked for
+    // the item name -- and sending it anyway would change what gets rendered.
     request.sku = style.needsSku ? cleanSku(g_print.sku) : "";
+
     request.line1 = style.needsLine1 ? g_print.line1 : "";
     request.line2 = style.usesLine2 ? line2 : "";
     request.copies = g_print.copies;
@@ -578,26 +642,128 @@ lipgloss::PrintRequest buildRequest(const Style& style) {
 // left out on purpose, since printing three of a label does not change how it
 // looks.
 std::string requestSignature(const Style& style) {
+    if (g_print.rangeMode) {
+        // A range's preview is only ever its first label, so that is the only
+        // field that changes what is shown.
+        return std::string("range\x1f") + g_print.rangeFrom;
+    }
+
     const lipgloss::PrintRequest request = buildRequest(style);
 
     return request.style + '\x1f' + request.sku + '\x1f' +
            request.line1 + '\x1f' + request.line2;
 }
 
+// The label shown before anything has been previewed.
+//
+// A real render from lipgloss rather than something drawn here, so it shows
+// exactly what the app produces and the QR code actually scans. The SKU is not
+// arbitrary.
+constexpr const char* kExampleStyle = "label_1_line_qr";
+constexpr const char* kExampleSku = "EER-120607";
+constexpr const char* kExampleLine1 = "Example Text!";
+
+void submitExamplePreview(lipgloss::Client& client) {
+    lipgloss::PrintRequest request;
+    request.style = kExampleStyle;
+    request.sku = kExampleSku;
+    request.line1 = kExampleLine1;
+
+    client.submitPreview(request);
+
+    g_print.previewIsExample = true;
+    g_print.exampleRequested = true;
+
+    // Left empty so the first real refresh cannot mistake the example for a
+    // preview of the form and skip itself.
+    g_print.previewOf.clear();
+}
+
+// Asks for whatever the form currently describes, and records what it was
+// asked for. Both modes go through here so every caller stays consistent.
+void submitPreview(lipgloss::Client& client, const Style& style) {
+    if (g_print.rangeMode) {
+        // Only the first label of the run: they differ solely by SKU, so one
+        // is representative and asking for all of them would be silly.
+        lipgloss::PrintRequest request;
+        request.style = "slim_barcode";
+        request.sku = cleanSku(g_print.rangeFrom);
+        client.submitPreview(request);
+    } else {
+        client.submitPreview(buildRequest(style));
+    }
+
+    g_print.previewOf = requestSignature(style);
+    g_print.previewIsExample = false;
+}
+
+// The preview's texture and the serial it was uploaded from.
+//
+// Owned by runSgumi, deliberately. This started out as a function-local static
+// and segfaulted on every exit: a static is destroyed by __cxa_finalize_ranges
+// during exit(), which is long after SDL_DestroyGPUDevice has run, and
+// releasing a texture against a destroyed device dereferences null. Holding it
+// in the frame loop's scope means it can be reset while the device is still
+// alive -- see the shutdown sequence.
+struct PreviewPanel {
+    image::Texture texture;
+    unsigned long long uploaded = 0;
+};
+
+// Sits above the form, always present, so the label being described is the
+// first thing on screen rather than something found by scrolling.
+//
+// Capped rather than filling the row: lipgloss returns the label already
+// scaled up for a screen, and letting that set the window's width would make
+// the whole app as wide as a 960px preview for no benefit.
+constexpr float kPreviewMaxWidth = 420.0f;
+
+// A label-shaped blank, drawn rather than fetched.
+//
+// Gives the panel something to hold before anything has been asked of
+// lipgloss, and -- because it takes the width and proportions a real preview
+// would -- stops the whole form jumping down the screen the first time one
+// arrives.
+void drawPlaceholderLabel(float width) {
+    // The Niimbot label's own proportions, 320x96. lipgloss adds a one pixel
+    // frame on each side, which at this size is not worth reproducing.
+    const ImVec2 size(width, width * (96.0f / 320.0f));
+    const ImVec2 pos = ImGui::GetCursorScreenPos();
+    const ImVec2 end(pos.x + size.x, pos.y + size.y);
+
+    ImDrawList* draw = ImGui::GetWindowDrawList();
+
+    // Paper, with the same frame lipgloss draws round its previews, so this
+    // reads as a blank label rather than as a failed image.
+    draw->AddRectFilled(pos, end, IM_COL32(237, 234, 228, 255));
+    draw->AddRect(pos, end, IM_COL32(20, 22, 27, 255));
+
+    const char* text = "No preview yet";
+    const ImVec2 textSize = ImGui::CalcTextSize(text);
+
+    draw->AddText(
+        ImVec2(pos.x + (size.x - textSize.x) * 0.5f,
+               pos.y + (size.y - textSize.y) * 0.5f),
+        IM_COL32(120, 125, 135, 255),
+        text);
+
+    // The drawing above is free-floating, so the layout still has to be told
+    // how much room it took.
+    ImGui::Dummy(size);
+}
+
 void drawPreview(
     const lipgloss::PreviewResult& preview,
     const Style& style,
-    SDL_GPUDevice* device)
+    SDL_GPUDevice* device,
+    PreviewPanel& panel)
 {
-    // Uploaded only when the bytes actually change. Static because the texture
-    // has to outlive the frame that draws it, and there is exactly one preview
-    // panel -- a member of some UI object would be tidier but buys nothing
-    // while that stays true.
-    static image::Texture texture;
-    static unsigned long long uploaded = 0;
+    image::Texture& texture = panel.texture;
 
-    if (preview.serial != uploaded) {
-        uploaded = preview.serial;
+    // Uploaded only when the bytes actually change, rather than decoding the
+    // same PNG every frame.
+    if (preview.serial != panel.uploaded) {
+        panel.uploaded = preview.serial;
 
         if (preview.png.empty()) {
             texture.reset();
@@ -606,38 +772,41 @@ void drawPreview(
         }
     }
 
+    // The same width either way, so swapping a blank for a real label moves
+    // nothing else on screen.
+    const float limit =
+        std::min(ImGui::GetContentRegionAvail().x, kPreviewMaxWidth);
+
+    if (texture.valid()) {
+        const float natural = static_cast<float>(texture.width());
+
+        // Only ever shrinks: the source is already blown up for a screen, and
+        // enlarging it further would just blur it. Aspect ratio preserved so a
+        // barcode is never stretched into something that would not scan.
+        const float scale = natural > limit ? limit / natural : 1.0f;
+
+        ImGui::Image(
+            texture.id(),
+            ImVec2(natural * scale,
+                   static_cast<float>(texture.height()) * scale));
+    } else {
+        drawPlaceholderLabel(limit);
+    }
+
     if (preview.state == lipgloss::PreviewResult::State::Pending) {
         ImGui::TextDisabled("Rendering...");
     } else if (!preview.error.empty()) {
         ImGui::PushTextWrapPos(0.0f);
         ImGui::TextColored(kBad, "%s", preview.error.c_str());
         ImGui::PopTextWrapPos();
-    }
-
-    if (!texture.valid()) {
-        if (preview.state == lipgloss::PreviewResult::State::Idle) {
-            ImGui::TextDisabled("Press Preview to see the label.");
-        }
-
-        return;
-    }
-
-    // lipgloss has already scaled the label up for a screen, so this only ever
-    // shrinks it -- to the panel width when the window is narrow, which is the
-    // phone case. Aspect ratio preserved so a barcode is never stretched into
-    // something that would not scan off the screen.
-    const float natural = static_cast<float>(texture.width());
-    const float avail = ImGui::GetContentRegionAvail().x;
-    const float scale = avail > 0.0f && natural > avail ? avail / natural : 1.0f;
-
-    ImGui::Image(
-        texture.id(),
-        ImVec2(natural * scale, static_cast<float>(texture.height()) * scale));
-
-    // The preview is a picture of fields that have since been edited, which is
-    // worth saying rather than letting someone print something they did not
-    // look at.
-    if (g_print.previewOf != requestSignature(style)) {
+    } else if (g_print.previewIsExample) {
+        ImGui::TextDisabled("Example label.");
+    } else if (texture.valid() &&
+               g_print.previewOf != requestSignature(style)) {
+        // A picture of fields that have since been edited, which is worth
+        // saying rather than letting someone print something they did not look
+        // at. Rare now that the refresh is automatic -- it survives for the
+        // cases the refresh declines, like lipgloss being unreachable.
         ImGui::TextColored(kWarn, "Fields changed since this preview.");
     }
 }
@@ -649,8 +818,19 @@ void drawPrint(
 {
     const Style& style = kStyles[g_print.styleIndex];
 
+    // Set by anything that changes how the label looks. Checked once at the
+    // end, where the request is known to be valid, so the preview keeps up
+    // without the button being pressed.
+    //
+    // Deliberately not per keystroke: IsItemDeactivatedAfterEdit fires when a
+    // field is left after being changed, which is one request per field rather
+    // than one per character.
+    bool changed = false;
+
+    // ---- Style, and quantity beside it when there is one ----
     fieldLabel("Style");
-    ImGui::SetNextItemWidth(fieldWidth());
+    ImGui::SetNextItemWidth(
+        g_print.rangeMode ? fieldWidth() : halfFieldWidth());
 
     if (ImGui::BeginCombo("##style", style.label)) {
         for (int i = 0; i < kStyleCount; ++i) {
@@ -658,6 +838,7 @@ void drawPrint(
 
             if (ImGui::Selectable(kStyles[i].label, selected)) {
                 g_print.styleIndex = i;
+                changed = true;
             }
 
             if (selected) {
@@ -668,143 +849,181 @@ void drawPrint(
         ImGui::EndCombo();
     }
 
-    // SKU. Disabled entirely for styles that put no SKU on the label, so the
-    // box cannot be filled in and then silently ignored.
-    ImGui::BeginDisabled(!style.needsSku);
+    if (!g_print.rangeMode) {
+        ImGui::SameLine();
+        fieldLabel("Quantity");
+        ImGui::SetNextItemWidth(halfFieldWidth());
+        ImGui::InputInt("##copies", &g_print.copies);
+        g_print.copies = std::clamp(g_print.copies, 1, lipgloss::kMaxCopies);
+    }
 
-    fieldLabel("SKU");
+    if (g_print.rangeMode) {
+        // ---- A range of SKUs, one label each ----
+        fieldLabel("From SKU");
+        ImGui::SetNextItemWidth(fieldWidth());
+        ImGui::InputText("##rangeFrom", g_print.rangeFrom,
+                         sizeof(g_print.rangeFrom));
+        changed = changed || ImGui::IsItemDeactivatedAfterEdit();
 
-    // Narrower than the other fields, and deliberately so: a SKU is ten
-    // characters, and the width it gives up is what lets the toggle sit beside
-    // it and still leave the row inside a phone's portrait width.
-    ImGui::SetNextItemWidth(std::min(fieldWidth(), 140.0f));
+        fieldLabel("To SKU");
+        ImGui::SetNextItemWidth(fieldWidth());
+        ImGui::InputText("##rangeTo", g_print.rangeTo, sizeof(g_print.rangeTo));
 
-    // EnterReturnsTrue for the barcode scanner, which types a SKU and presses
-    // enter, that is the normal way a SKU reaches this box on the kiosk.
-    // IsItemDeactivatedAfterEdit catches the mouse case, someone typing and
-    // then clicking away. Together they mean "the SKU is finished", which is
-    // when a lookup is worth making; firing per keystroke would ask claws
-    // about every prefix.
-    const bool entered = ImGui::InputText(
-        "##sku", g_print.sku, sizeof(g_print.sku),
-        ImGuiInputTextFlags_EnterReturnsTrue);
+        // Not folded into `changed`: the last SKU does not alter the first
+        // label, which is all the preview ever shows for a range.
+    } else {
+        // ---- SKU, with the claws toggle beside it ----
+        //
+        // The box is enabled whenever the SKU is of use to anything: either the
+        // style puts it on the label, or claws is being asked to name the item.
+        // A "Label" carries no SKU but still needs one typed here to look the
+        // name up, which is the whole point of the toggle.
+        const bool skuWanted = style.needsSku || g_print.useSkuName;
 
-    const bool committed = entered || ImGui::IsItemDeactivatedAfterEdit();
+        fieldLabel("SKU");
+        ImGui::BeginDisabled(!skuWanted);
+        ImGui::SetNextItemWidth(halfFieldWidth());
 
-    ImGui::SameLine();
+        // EnterReturnsTrue for the barcode scanner, which types a SKU and
+        // presses enter. IsItemDeactivatedAfterEdit catches the mouse case,
+        // someone typing and then clicking away. Together they mean "the SKU
+        // is finished", which is when a lookup is worth making; firing per
+        // keystroke would ask claws about every prefix.
+        const bool entered = ImGui::InputText(
+            "##sku", g_print.sku, sizeof(g_print.sku),
+            ImGuiInputTextFlags_EnterReturnsTrue);
 
-    // Mirrors the bot's get_text_from_sku flag: while it is on, line 1 is
-    // claws's to fill and not the user's to type. Labelled short to fit beside
-    // the box, with the full sentence on hover.
-    const bool toggled = ImGui::Checkbox("From claws", &g_print.useSkuName);
+        const bool committed = entered || ImGui::IsItemDeactivatedAfterEdit();
+
+        // Only matters for styles that put the SKU on the label. When claws is
+        // filling line 1 this usually fires twice -- once for the new SKU, once
+        // when the name lands -- but the client holds a single pending preview,
+        // so the two collapse into one request more often than not.
+        changed = changed || committed;
+
+        ImGui::EndDisabled();
+
+        ImGui::SameLine();
+
+        // Never disabled, even for a style with no SKU on it: switching this on
+        // is what makes the SKU box above usable in the first place.
+        const bool toggled = ImGui::Checkbox("From claws", &g_print.useSkuName);
+
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip(
+                "Fill line 1 with the item's name from claws.");
+        }
+
+        if (g_print.useSkuName) {
+            if ((toggled || committed) && !blank(g_print.sku)) {
+                g_print.filledFromSku.clear();
+                clawsClient.lookup(cleanSku(g_print.sku));
+            }
+        } else if (toggled) {
+            // Switched off: line 1 goes back to being the user's, keeping
+            // whatever the last lookup put there rather than blanking it.
+            clawsClient.clearLookup();
+            g_print.filledFromSku.clear();
+        }
+
+        // ---- The two text lines ----
+        //
+        // Read after the lookup above so a freshly asked SKU shows "Looking
+        // up" this frame rather than next.
+        const claws::Lookup lookup = clawsClient.lookupResult();
+
+        // Locked only while claws is actually supplying it. An editable field
+        // something else rewrites is a trap, but so is a locked empty one: with
+        // the toggle on and a SKU claws has never heard of, line 1 would
+        // otherwise be both empty and uneditable, leaving Print blocked on
+        // "needs line 1" with no way out.
+        const bool line1Derived =
+            g_print.useSkuName && lookup.state == claws::Lookup::State::Found;
+
+        fieldLabel("Line 1");
+        ImGui::BeginDisabled(!style.needsLine1 || line1Derived);
+        ImGui::SetNextItemWidth(halfFieldWidth());
+        ImGui::InputText("##line1", g_print.line1, sizeof(g_print.line1));
+        changed = changed || ImGui::IsItemDeactivatedAfterEdit();
+        ImGui::EndDisabled();
+
+        ImGui::SameLine();
+
+        fieldLabel("Line 2");
+        ImGui::BeginDisabled(!style.usesLine2);
+        ImGui::SetNextItemWidth(halfFieldWidth());
+        ImGui::InputText("##line2", g_print.line2, sizeof(g_print.line2));
+        changed = changed || ImGui::IsItemDeactivatedAfterEdit();
+        ImGui::EndDisabled();
+
+        if (g_print.useSkuName) {
+            // A lookup landing rewrites line 1, and that is a change to the
+            // label as much as typing one would be -- without this the preview
+            // would still show whatever line 1 held before claws answered.
+            const std::string filledBefore = g_print.filledFromSku;
+            drawLookupResult(lookup);
+            changed = changed || g_print.filledFromSku != filledBefore;
+        }
+    }
+
+    // ---- The mode switch ----
+    if (ImGui::Checkbox("Range print", &g_print.rangeMode)) {
+        // The preview on screen describes the other mode's fields, so it is
+        // dropped back to the blank rather than left showing the wrong label.
+        lipglossClient.clearPreview();
+        g_print.previewOf.clear();
+        changed = true;
+    }
 
     if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip(
-            "Fill line 1 with the item's name from claws.\n"
-            "Looks up when you press enter or click away.");
+        ImGui::SetTooltip("Print one label per SKU across a range.");
     }
-
-    ImGui::EndDisabled();
-
-    if (style.needsSku && g_print.useSkuName) {
-        // Re-asked whenever the SKU is finished, and once when the toggle goes
-        // on, so the name always describes the SKU currently in the box.
-        const bool askNow = toggled || committed;
-
-        if (askNow && !blank(g_print.sku)) {
-            g_print.filledFromSku.clear();
-            clawsClient.lookup(cleanSku(g_print.sku));
-        }
-    } else if (toggled && !g_print.useSkuName) {
-        // Switched off: line 1 goes back to being the user's, keeping whatever
-        // the last lookup put there rather than blanking it.
-        clawsClient.clearLookup();
-        g_print.filledFromSku.clear();
-    }
-
-    // Read after the lookup above so a freshly asked SKU shows "Looking up"
-    // this frame rather than next.
-    const claws::Lookup lookup = clawsClient.lookupResult();
-
-    if (style.needsSku && g_print.useSkuName) {
-        drawLookupResult(lookup);
-    }
-
-    // Line 1 is locked only while claws is actually supplying it, an
-    // editable field that something else rewrites is a trap, but so is a
-    // locked empty one.
-    //
-    // The state test is what stops the dead end: with the toggle on and a SKU
-    // claws has never heard of, line 1 would otherwise be both empty and
-    // uneditable, leaving Print permanently blocked on "needs line 1" with no
-    // way out except noticing the toggle. A miss or an error hands the field
-    // back so the text can just be typed.
-    const bool line1Derived = style.needsSku && g_print.useSkuName &&
-                              lookup.state == claws::Lookup::State::Found;
-
-    fieldLabel("Line 1");
-    ImGui::SetNextItemWidth(fieldWidth());
-    ImGui::BeginDisabled(!style.needsLine1 || line1Derived);
-    ImGui::InputText("##line1", g_print.line1, sizeof(g_print.line1));
-    ImGui::EndDisabled();
-
-    fieldLabel("Line 2");
-    ImGui::SetNextItemWidth(fieldWidth());
-    ImGui::BeginDisabled(!style.usesLine2);
-    ImGui::InputText("##line2", g_print.line2, sizeof(g_print.line2));
-    ImGui::EndDisabled();
-
-    // The styles that change shape based on line 2 are worth calling out,
-    // otherwise picking "Label" and getting a two-line label looks like a bug.
-    const std::string styleValue = style.value;
-
-    if (styleValue == "label" || styleValue == "label_qr") {
-        ImGui::Indent(kLabelWidth);
-        ImGui::TextDisabled(
-            blank(g_print.line2)
-                ? "One line. Fill line 2 for the two-line version."
-                : "Two lines, because line 2 is filled in.");
-        ImGui::Unindent(kLabelWidth);
-    }
-
-    fieldLabel("Copies");
-    ImGui::SetNextItemWidth(fieldWidth());
-    ImGui::InputInt("##copies", &g_print.copies);
-    g_print.copies = std::clamp(g_print.copies, 1, lipgloss::kMaxCopies);
 
     ImGui::Spacing();
 
+    // ---- What can be pressed, and why not ----
     const lipgloss::ActionResult action = lipglossClient.actionResult();
     const bool pending = action.state == lipgloss::ActionResult::State::Pending;
-    const char* blocker = printBlocker(style);
 
-    // Three separate reasons the button cannot be pressed, and the message
-    // beside it says which. Disabled with no explanation is the thing to avoid.
+    int rangeFrom = 0;
+    int rangeTo = 0;
+    const char* blocker = nullptr;
+
+    if (g_print.rangeMode) {
+        if (!skuNumber(g_print.rangeFrom, rangeFrom)) {
+            blocker = "Enter a starting SKU.";
+        } else if (!skuNumber(g_print.rangeTo, rangeTo)) {
+            blocker = "Enter an ending SKU.";
+        } else if (rangeTo < rangeFrom) {
+            blocker = "The first SKU is higher than the last.";
+        }
+    } else {
+        blocker = printBlocker(style);
+    }
+
     const bool disabled = pending || blocker != nullptr || !snapshot.reachable;
 
-    ImGui::Indent(kLabelWidth);
+    // Automatic refresh. Gated on the request being valid and on the fields
+    // having actually moved since the showing preview was made -- leaving a
+    // box without changing anything asks lipgloss for nothing.
+    if (changed &&
+        blocker == nullptr &&
+        snapshot.reachable &&
+        requestSignature(style) != g_print.previewOf) {
+        submitPreview(lipglossClient, style);
+    }
+
     ImGui::BeginDisabled(disabled);
 
     if (ImGui::Button("Print")) {
-        lipglossClient.submitPrint(buildRequest(style));
+        if (g_print.rangeMode) {
+            lipglossClient.submitBarcodes(rangeFrom, rangeTo);
+        } else {
+            lipglossClient.submitPrint(buildRequest(style));
+        }
     }
 
     ImGui::EndDisabled();
-
-    ImGui::SameLine();
-
-    // Preview needs the same fields filled as a print does -- it renders the
-    // same label -- but does not care whether lipgloss can reach the printer,
-    // so it stays available when Print is not.
-    ImGui::BeginDisabled(blocker != nullptr || !snapshot.reachable);
-
-    if (ImGui::Button("Preview")) {
-        lipglossClient.submitPreview(buildRequest(style));
-        g_print.previewOf = requestSignature(style);
-    }
-
-    ImGui::EndDisabled();
-    ImGui::Unindent(kLabelWidth);
 
     ImGui::SameLine();
 
@@ -814,6 +1033,9 @@ void drawPrint(
         ImGui::TextColored(kBad, "lipgloss is unreachable.");
     } else if (blocker) {
         ImGui::TextDisabled("%s", blocker);
+    } else if (g_print.rangeMode) {
+        const int total = rangeTo - rangeFrom + 1;
+        ImGui::TextDisabled("%d label%s.", total, total == 1 ? "" : "s");
     } else {
         switch (action.state) {
         case lipgloss::ActionResult::State::Ok:
@@ -837,48 +1059,23 @@ void drawPrint(
             break;
         }
     }
-}
 
-// Printing a run of blank SKU barcodes to stick on bins before anything is
-// entered. Shares nothing with the form above, hence its own section.
-void drawBarcodeRange(
-    lipgloss::Client& lipglossClient,
-    const lipgloss::Snapshot& snapshot)
-{
-    fieldLabel("From");
-    ImGui::SetNextItemWidth(fieldWidth());
-    ImGui::InputInt("##rangeLower", &g_print.rangeLower);
+    if (g_print.rangeMode) {
+        // The style selector is above because the layout is meant to outlive
+        // this limitation, but POST /print/barcodes takes no style and renders
+        // slim_barcode itself. Said plainly rather than letting the selector
+        // imply a choice that does not reach the wire yet.
+        ImGui::TextDisabled(
+            "Range printing always uses Barcode for now; the style above is "
+            "not sent.");
 
-    fieldLabel("To");
-    ImGui::SetNextItemWidth(fieldWidth());
-    ImGui::InputInt("##rangeUpper", &g_print.rangeUpper);
-
-    g_print.rangeLower = std::max(g_print.rangeLower, 0);
-    g_print.rangeUpper = std::max(g_print.rangeUpper, 0);
-
-    const int total = g_print.rangeUpper - g_print.rangeLower + 1;
-    const bool inverted = g_print.rangeUpper < g_print.rangeLower;
-
-    const lipgloss::ActionResult action = lipglossClient.actionResult();
-    const bool pending = action.state == lipgloss::ActionResult::State::Pending;
-
-    ImGui::Indent(kLabelWidth);
-    ImGui::BeginDisabled(pending || inverted || !snapshot.reachable);
-
-    if (ImGui::Button("Print range")) {
-        lipglossClient.submitBarcodes(g_print.rangeLower, g_print.rangeUpper);
-    }
-
-    ImGui::EndDisabled();
-    ImGui::Unindent(kLabelWidth);
-
-    ImGui::SameLine();
-
-    if (inverted) {
-        ImGui::TextDisabled("From is higher than To.");
-    } else {
-        ImGui::TextDisabled("%d label%s, slim barcode.",
-                            total, total == 1 ? "" : "s");
+        if (action.state == lipgloss::ActionResult::State::Ok) {
+            ImGui::TextColored(kGood, "Job %lld queued.", action.jobId);
+        } else if (action.state == lipgloss::ActionResult::State::Failed) {
+            ImGui::PushTextWrapPos(0.0f);
+            ImGui::TextColored(kBad, "%s", action.message.c_str());
+            ImGui::PopTextWrapPos();
+        }
     }
 }
 
@@ -954,7 +1151,7 @@ void drawQueue(const lipgloss::Snapshot& snapshot) {
 int runSgumi() {
     SDL_SetAppMetadata("SGUMI", SGUMI_VERSION, kAppId);
 
-    // Useful on Linux desktops -- this is what xfce matches against the
+    // Useful on Linux desktops, this is what DEs match against the
     // .desktop file to give the window its name and icon.
     SDL_SetHint(SDL_HINT_APP_ID, kAppId);
 
@@ -968,7 +1165,8 @@ int runSgumi() {
         SDL_WINDOW_RESIZABLE |
         SDL_WINDOW_HIGH_PIXEL_DENSITY;
 
-    SDL_Window* window = SDL_CreateWindow("SGUMI", 900, 700, windowFlags);
+    // Narrow and tall rather than square
+    SDL_Window* window = SDL_CreateWindow("SGUMI", 620, 820, windowFlags);
 
     if (!window) {
         reportFatal("SDL_CreateWindow failed", SDL_GetError());
@@ -1049,6 +1247,8 @@ int runSgumi() {
     clawsClient.setEndpoint(g_config.clawsUrl, g_config.clawsToken);
     clawsClient.start();
 
+    PreviewPanel previewPanel;
+
     bool showSettings = g_config.lipglossToken[0] == '\0';
 #if defined(SGUMI_THEME_EDITOR)
     bool showThemeEditor = false;
@@ -1093,9 +1293,7 @@ int runSgumi() {
         // could show two different polls in one frame.
         const lipgloss::Snapshot snapshot = client.snapshot();
 
-        // The main window fills the OS window and is not movable: there is
-        // only one, and on a kiosk a draggable panel is something to
-        // accidentally shove off-screen, not a feature.
+        // The main window fills the OS window and is not movable
         const ImGuiViewport* viewport = ImGui::GetMainViewport();
         ImGui::SetNextWindowPos(viewport->WorkPos);
         ImGui::SetNextWindowSize(viewport->WorkSize);
@@ -1115,12 +1313,6 @@ int runSgumi() {
                         showSettings = true;
                     }
 
-                    ImGui::Separator();
-
-                    if (ImGui::MenuItem("Quit")) {
-                        done = true;
-                    }
-
                     ImGui::EndMenu();
                 }
 
@@ -1129,29 +1321,30 @@ int runSgumi() {
                 ImGui::EndMenuBar();
             }
 
+            const lipgloss::PreviewResult previewResult = client.previewResult();
+
+            // Nothing has ever been previewed, so show a real label rather
+            // than an empty frame.
+            if (!g_print.exampleRequested &&
+                previewResult.state == lipgloss::PreviewResult::State::Idle &&
+                snapshot.reachable) {
+                submitExamplePreview(client);
+            }
+
+            // The preview goes first: the label is what this screen is about,
+            // and the fields below are how it gets changed.
+            drawPreview(previewResult,
+                        kStyles[g_print.styleIndex],
+                        gpuDevice,
+                        previewPanel);
+
+            ImGui::Spacing();
             ImGui::SeparatorText("Print");
             drawPrint(client, clawsClient, snapshot);
 
             ImGui::Spacing();
-            drawPreview(client.previewResult(),
-                        kStyles[g_print.styleIndex],
-                        gpuDevice);
-
-            ImGui::Spacing();
-
-            // Collapsed by default: printing a run of blank barcodes is a
-            // setup task, not something done during a normal shift.
-            if (ImGui::CollapsingHeader("Barcode range")) {
-                drawBarcodeRange(client, snapshot);
-            }
-
-            ImGui::Spacing();
             ImGui::SeparatorText("Print queue");
             drawQueue(snapshot);
-
-            ImGui::Spacing();
-            ImGui::TextDisabled(
-                "Printing is not wired up yet.");
         }
 
         ImGui::End();
@@ -1302,6 +1495,12 @@ int runSgumi() {
     clawsClient.stop();
 
     SDL_WaitForGPUIdle(gpuDevice);
+
+    // Before the device goes: SDL_ReleaseGPUTexture needs the device that made
+    // the texture. Letting this run on its own at scope exit would put it
+    // after SDL_DestroyGPUDevice below, which is a null dereference -- the
+    // exact crash an earlier version of this shipped with.
+    previewPanel.texture.reset();
 
     ImGui_ImplSDLGPU3_Shutdown();
     ImGui_ImplSDL3_Shutdown();
