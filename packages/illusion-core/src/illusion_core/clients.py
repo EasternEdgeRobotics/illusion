@@ -177,6 +177,26 @@ class LipglossClient(BaseClient):
             },
         )
 
+    async def preview_image(self, image_bytes, scale=3, rotate=0):
+        """PNG bytes of an image as the print head would dither it.
+
+        The counterpart to print_image, and the only way to see what one bit per
+        pixel does to a picture without spending a label finding out.
+
+        rotate turns the finished dither for reading. An image is sent the way
+        the head wants it, long side down the roll; 270 gives it back the shape
+        a label is read in, which is what preview() returns for every other
+        style.
+        """
+        response = await self._request(
+            "POST",
+            "/preview/image",
+            files={"file": ("label.png", image_bytes, "image/png")},
+            data={"scale": str(scale), "rotate": str(rotate)},
+        )
+
+        return response.content
+
     async def preview(self, style, sku=None, line_1=None, line_2=None, scale=3):
         """PNG bytes of the label print_label would produce, same geometry and all.
 

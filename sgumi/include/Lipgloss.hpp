@@ -93,6 +93,24 @@ struct PrintRequest {
     int copies = 1;
 };
 
+// What POST /print/image takes, once the picked file has been turned into
+// something the printer will accept. Not a PrintRequest: there is no style and
+// no SKU, the label is the image.
+struct ImageRequest {
+    // PNG bytes. lipgloss writes these to a .png and hands the path to the
+    // printer without looking at them, so whatever is here is what prints.
+    std::string png;
+
+    // Shown in the queue's Description column. lipgloss truncates at 60.
+    std::string description;
+
+    int copies = 1;
+};
+
+// lipgloss truncates description to this in print_image. Mirrored so the box
+// can stop at the same place rather than silently losing the end.
+constexpr int kMaxImageDescription = 60;
+
 // The outcome of the last submitted print. One value rather than a list: the
 // UI submits one at a time and only reports the most recent.
 struct ActionResult {
@@ -109,6 +127,7 @@ struct ActionResult {
     enum class Kind {
         Print,
         Barcodes,
+        Image,
         Resume,
         Clear,
         Cancel,
@@ -151,6 +170,19 @@ constexpr auto kEventRetryInterval = std::chrono::seconds(5);
 // lipgloss clamps this to PREVIEW_MAX_SCALE (8) in label_maker.py. 3 is its
 // default and is what the bot asks for.
 constexpr int kPreviewScale = 3;
+
+// PREVIEW_MAX_SCALE itself. An image preview picks its own magnification from
+// how small the label is, so it needs the ceiling rather than the default.
+constexpr int kMaxPreviewScale = 8;
+
+// What an image preview asks to be turned by.
+//
+// lipgloss renders a label the way it is read and turns it a quarter
+// anticlockwise on the way to the head, so the printed orientation is the read
+// one rotated 90. An image is built printed-side-up, and this is the quarter
+// that puts it back -- which is what makes it arrive the same shape, wide and
+// short, as the preview of every rendered style.
+constexpr int kPreviewRotate = 270;
 
 // The PNG POST /preview hands back, and what went wrong if it did not.
 struct PreviewResult {
@@ -231,6 +263,13 @@ public:
                         std::string line1, std::string line2,
                         std::map<std::string, std::string> line1BySku);
 
+    // POST /print/image -- a label that is a picture rather than a rendering.
+    //
+    // lipgloss does nothing to the image: it writes the bytes to a .png and
+    // gives the printer the path. Sizing and orientation are therefore settled
+    // before the request is built, not by the far end.
+    void submitImage(ImageRequest request);
+
     // POST /queue/resume -- restarts a queue lipgloss paused because the
     // printer needed attention. Reported through actionResult() like a print,
     // since it is the same kind of "did that work?" question.
@@ -252,6 +291,23 @@ public:
     // for a preview can never displace a print that was already on its way.
     void submitPreview(PrintRequest request);
 
+    // POST /preview/image -- the same question for an image: what the print
+    // head will actually lay down, which for a one bit per pixel printer means
+    // a Floyd-Steinberg dither of whatever was sent.
+    //
+    // Answered into the same slot as submitPreview, because only one preview is
+    // ever on screen and the UI does not care which endpoint drew it.
+    //
+    // scale is a nearest-neighbour magnification applied after the dither: a
+    // label 96 pixels across is unreadable at its own size, and anything
+    // smoother would average the dots back into the grey they came from.
+    //
+    // rotate turns the finished dither for reading rather than for printing.
+    // An image is sent the way the head wants it -- across the 96, along the
+    // 320 -- and kPreviewRotate turns it back into the shape every other
+    // preview arrives in.
+    void submitImagePreview(std::string png, int scale, int rotate);
+
     void clearAction();
     void clearPreview();
 
@@ -267,6 +323,7 @@ private:
         enum class Kind {
             Print,
             Barcodes,
+            Image,
             Resume,
             Clear,
             Cancel,
@@ -278,14 +335,34 @@ private:
         int upper = 0;
         std::map<std::string, std::string> line1BySku;
 
+        // Kind::Image only. Held by value, so the UI is free to pick another
+        // file the moment the button is pressed.
+        ImageRequest image;
+
         // Kind::Cancel only -- the job to pull, which goes in the path.
         long long jobId = -1;
+    };
+
+    // One slot, two endpoints. A label preview describes typed fields and an
+    // image preview describes bytes, but only one of them is ever being looked
+    // at, so they share a result and displace each other.
+    struct PendingPreview {
+        enum class Kind {
+            Label,
+            Image,
+        };
+
+        Kind kind = Kind::Label;
+        PrintRequest print;
+        std::string png;
+        int scale = kPreviewScale;
+        int rotate = 0;
     };
 
     void run();
     void pollOnce();
     void runAction(const PendingAction& action);
-    void runPreview(const PrintRequest& request);
+    void runPreview(const PendingPreview& request);
 
     void runEvents();
 
@@ -316,7 +393,7 @@ private:
     std::optional<PendingAction> pendingAction_;
 
     PreviewResult preview_;
-    std::optional<PrintRequest> pendingPreview_;
+    std::optional<PendingPreview> pendingPreview_;
 
     std::atomic<bool> running_ { false };
     std::thread worker_;

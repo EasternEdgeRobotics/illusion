@@ -4,6 +4,8 @@
 #include "imgui.h"
 
 #include <cstddef>
+#include <string>
+#include <vector>
 
 // Decoding a PNG into a GPU texture, for the label preview.
 //
@@ -50,5 +52,49 @@ private:
     int width_ = 0;
     int height_ = 0;
 };
+
+// ---------------------------------------------------------------------------
+// Images on the CPU
+//
+// Only image printing needs these. A label rendered by lipgloss goes straight
+// from bytes to texture and is never touched, but an image someone picked off
+// their disk has to be measured, turned, fitted to the roll and re-encoded
+// before it is worth sending -- and every one of those steps has to happen to
+// the bytes, not to the copy on the GPU.
+// ---------------------------------------------------------------------------
+
+// A decoded image, RGBA, eight bits a channel.
+struct Bitmap {
+    std::vector<unsigned char> pixels;  // width * height * 4
+    int width = 0;
+    int height = 0;
+
+    bool valid() const { return width > 0 && height > 0; }
+};
+
+// Anything stb_image reads: PNG, JPEG, BMP, GIF, TGA, PSD. The picker offers
+// that same list, so what can be chosen is what can be decoded.
+bool decode(const void* data, size_t length, Bitmap& out);
+
+// Reads the file and decodes it. error is filled when it returns false, and is
+// worth showing -- "no such file" and "not an image" look identical otherwise.
+bool decodeFile(const char* path, Bitmap& out, std::string& error);
+
+// Quarter turns clockwise, 0-3. Anything else is taken modulo 4.
+Bitmap rotated(const Bitmap& source, int quarterTurns);
+
+// Resampled to exactly these dimensions. Both must be at least 1.
+Bitmap scaled(const Bitmap& source, int width, int height);
+
+// Centred on an opaque white field of exactly these dimensions, for an image
+// that is to keep its proportions rather than be distorted to fill a label.
+//
+// A source already at least this large in one direction is not cropped, it
+// simply is not padded in that direction.
+Bitmap paddedTo(const Bitmap& source, int width, int height);
+
+// PNG bytes. lipgloss writes whatever arrives to a .png and hands it to the
+// printer, so this is the last point at which the image is ours.
+bool encodePng(const Bitmap& source, std::string& out);
 
 }  // namespace image

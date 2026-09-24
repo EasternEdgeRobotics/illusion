@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <utility>
+#include <vector>
 
 using json = nlohmann::json;
 
@@ -171,6 +172,23 @@ void Client::submitBarcodes(int lower, int upper, std::string style,
     wake_.notify_all();
 }
 
+void Client::submitImage(ImageRequest request) {
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+
+        action_ = ActionResult {};
+        action_.state = ActionResult::State::Pending;
+        action_.kind = ActionResult::Kind::Image;
+
+        PendingAction pending;
+        pending.kind = PendingAction::Kind::Image;
+        pending.image = std::move(request);
+        pendingAction_ = std::move(pending);
+    }
+
+    wake_.notify_all();
+}
+
 void Client::submitResume() {
     {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -236,7 +254,28 @@ void Client::submitPreview(PrintRequest request) {
         preview_.state = PreviewResult::State::Pending;
         preview_.error.clear();
 
-        pendingPreview_ = std::move(request);
+        PendingPreview pending;
+        pending.kind = PendingPreview::Kind::Label;
+        pending.print = std::move(request);
+        pendingPreview_ = std::move(pending);
+    }
+
+    wake_.notify_all();
+}
+
+void Client::submitImagePreview(std::string png, int scale, int rotate) {
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+
+        preview_.state = PreviewResult::State::Pending;
+        preview_.error.clear();
+
+        PendingPreview pending;
+        pending.kind = PendingPreview::Kind::Image;
+        pending.png = std::move(png);
+        pending.scale = scale;
+        pending.rotate = rotate;
+        pendingPreview_ = std::move(pending);
     }
 
     wake_.notify_all();
@@ -280,7 +319,7 @@ void Client::run() {
         // poll is background. Running it first also means the poll that
         // follows already reflects the job just queued.
         std::optional<PendingAction> pending;
-        std::optional<PrintRequest> preview;
+        std::optional<PendingPreview> preview;
         std::chrono::milliseconds interval;
 
         {
@@ -424,6 +463,9 @@ void Client::runAction(const PendingAction& action) {
     case PendingAction::Kind::Barcodes:
         result.kind = ActionResult::Kind::Barcodes;
         break;
+    case PendingAction::Kind::Image:
+        result.kind = ActionResult::Kind::Image;
+        break;
     case PendingAction::Kind::Resume:
         result.kind = ActionResult::Kind::Resume;
         break;
@@ -476,6 +518,9 @@ void Client::runAction(const PendingAction& action) {
         }
 
         body["source"] = kSource;
+    } else if (action.kind == PendingAction::Kind::Image) {
+        // No JSON body: every field goes in the multipart form built below.
+        path = "/print/image";
     } else if (action.kind == PendingAction::Kind::Cancel) {
         // The whole request is the path. No body, and a verb of its own.
         path = "/queue/" + std::to_string(action.jobId);
@@ -490,9 +535,34 @@ void Client::runAction(const PendingAction& action) {
 
     const std::string url = http::join(baseUrl, path.c_str());
 
-    const http::Response response = action.kind == PendingAction::Kind::Cancel
-        ? http::del(url, token)
-        : http::post(url, token, body.dump());
+    http::Response response;
+
+    if (action.kind == PendingAction::Kind::Cancel) {
+        response = http::del(url, token);
+    } else if (action.kind == PendingAction::Kind::Image) {
+        // Multipart rather than JSON, because that endpoint takes an UploadFile
+        // and three Form fields. Sending the PNG as JSON would mean base64 for
+        // no gain, and FastAPI would not accept it anyway.
+        //
+        // The filename is fixed: lipgloss names the file it writes itself, so
+        // this one is only ever what makes the part a file part.
+        std::vector<http::FormField> form;
+        form.push_back({ "file", action.image.png, "label.png", "image/png" });
+        form.push_back({ "description",
+                         action.image.description.substr(
+                             0, std::min<size_t>(action.image.description.size(),
+                                                 kMaxImageDescription)),
+                         "", "" });
+        form.push_back({ "copies",
+                         std::to_string(
+                             std::clamp(action.image.copies, 1, kMaxCopies)),
+                         "", "" });
+        form.push_back({ "source", kSource, "", "" });
+
+        response = http::postForm(url, token, form);
+    } else {
+        response = http::post(url, token, body.dump());
+    }
 
     if (!response.transportOk) {
         result.state = ActionResult::State::Failed;
@@ -578,7 +648,7 @@ void Client::runAction(const PendingAction& action) {
     action_ = std::move(result);
 }
 
-void Client::runPreview(const PrintRequest& request) {
+void Client::runPreview(const PendingPreview& request) {
     std::string baseUrl;
     std::string token;
 
@@ -594,15 +664,29 @@ void Client::runPreview(const PrintRequest& request) {
     if (baseUrl.empty()) {
         result.error = "No lipgloss URL configured.";
     } else {
-        json body;
-        body["style"] = request.style;
-        putOrNull(body, "sku", request.sku);
-        putOrNull(body, "line_1", request.line1);
-        putOrNull(body, "line_2", request.line2);
-        body["scale"] = kPreviewScale;
+        http::Response response;
 
-        const http::Response response =
-            http::post(http::join(baseUrl, "/preview"), token, body.dump());
+        if (request.kind == PendingPreview::Kind::Image) {
+            // Same shape as /print/image, minus the fields that describe a job,
+            // because this one does not make one.
+            std::vector<http::FormField> form;
+            form.push_back({ "file", request.png, "label.png", "image/png" });
+            form.push_back({ "scale", std::to_string(request.scale), "", "" });
+            form.push_back({ "rotate", std::to_string(request.rotate), "", "" });
+
+            response = http::postForm(
+                http::join(baseUrl, "/preview/image"), token, form);
+        } else {
+            json body;
+            body["style"] = request.print.style;
+            putOrNull(body, "sku", request.print.sku);
+            putOrNull(body, "line_1", request.print.line1);
+            putOrNull(body, "line_2", request.print.line2);
+            body["scale"] = kPreviewScale;
+
+            response =
+                http::post(http::join(baseUrl, "/preview"), token, body.dump());
+        }
 
         if (!response.transportOk) {
             result.error = response.error;

@@ -33,6 +33,7 @@
 #include <fstream>
 #include <iostream>
 #include <map>
+#include <mutex>
 #include <string>
 
 namespace fs = std::filesystem;
@@ -121,6 +122,72 @@ struct PrintForm {
     char rangeFrom[64] = "";
     char rangeTo[64] = "";
 };
+
+// The image style's own form. Separate from PrintForm because none of it
+// applies to a rendered label, and because the decoded bitmaps are large enough
+// that carrying them around in the struct every style touches would be untidy.
+struct ImageForm {
+    // The file as it was picked, decoded once. Kept so turning or refitting
+    // does not re-read the disk, and so repeated fits do not compound their
+    // own resampling losses.
+    image::Bitmap source;
+
+    std::string path;
+    std::string name;   // basename, and the description when none is typed
+    std::string error;  // why the last pick did not load
+
+    char description[128] = "";
+    int copies = 1;
+
+    // Quarter turns clockwise. A phone photo is landscape and the label is
+    // narrow, so turning it is the common case rather than an exotic one.
+    int quarterTurns = 0;
+
+    // Whether the image is distorted to the label's shape or fitted inside it
+    // with white to spare. Either way the label itself comes out whole: the
+    // stock is precut at 12x40mm, so an image that covers a third of it is not
+    // a smaller label, just a mostly empty one.
+    //
+    // On by default because using the label is the usual want, and the label is
+    // long and thin while almost nothing anyone picks is.
+    bool stretch = true;
+
+    // What the knobs above produce, and what actually gets sent. Rebuilt when
+    // something changes rather than every frame -- a resample of a twelve
+    // megapixel photo is not a per-frame cost.
+    image::Bitmap prepared;
+    std::string png;
+    bool dirty = false;
+
+    // Bumped when png is replaced, so the preview panel re-uploads only then.
+    // Its own counter rather than the lipgloss preview's: the two are different
+    // pictures with different lifetimes.
+    unsigned long long serial = 0;
+
+    // The serial already sent to lipgloss for dithering. Compared rather than
+    // flagged, so a preview is asked for exactly once per prepared image no
+    // matter how many frames pass before the answer lands.
+    unsigned long long previewedSerial = 0;
+};
+
+ImageForm g_image;
+
+// Filled by SDL's file dialog callback and drained by the frame loop. The SDL
+// docs are explicit that the callback may run on another thread, so this is the
+// handover rather than writing into g_image directly.
+struct PickedFile {
+    std::mutex mutex;
+    std::string path;
+    std::string error;
+
+    // A dialog is open. Keeps the button from stacking a second one.
+    bool waiting = false;
+
+    // Something to consume. A cancel clears waiting without setting this.
+    bool ready = false;
+};
+
+PickedFile g_picked;
 
 PrintForm g_print;
 
@@ -286,16 +353,24 @@ struct Style {
     // Whether line 2 does anything for this style. False greys the field out
     // rather than silently ignoring what gets typed there.
     bool usesLine2;
+
+    // The odd one out: not a lipgloss style at all. It has no name on the wire,
+    // goes to /print/image instead of /print, and swaps the form for a picker
+    // the way Range print does. It lives in this list because "what am I
+    // printing" is one question, and a second picker beside the style one would
+    // be two controls for it.
+    bool isImage;
 };
 
 constexpr Style kStyles[] = {
-    { "slim_barcode",    "Barcode",                true,  false, false },
-    { "label_barcode",   "Label w/ Barcode",       true,  true,  false },
-    { "label_qr",        "Label w/ QR Code",       true,  true,  true  },
-    { "label",           "Label",                  false, true,  true  },
-    { "cable_label",     "Cable Label",            false, true,  true  },
-    { "cable_label_sku", "Cable Label w/ SKU",     true,  true,  true  },
-    { "cable_label_qr",  "Cable Label w/ QR Code", true,  true,  false },
+    { "slim_barcode",    "Barcode",                true,  false, false, false },
+    { "label_barcode",   "Label w/ Barcode",       true,  true,  false, false },
+    { "label_qr",        "Label w/ QR Code",       true,  true,  true,  false },
+    { "label",           "Label",                  false, true,  true,  false },
+    { "cable_label",     "Cable Label",            false, true,  true,  false },
+    { "cable_label_sku", "Cable Label w/ SKU",     true,  true,  true,  false },
+    { "cable_label_qr",  "Cable Label w/ QR Code", true,  true,  false, false },
+    { "",                "Image",                  false, false, false, true  },
 };
 
 constexpr int kStyleCount = static_cast<int>(sizeof(kStyles) / sizeof(kStyles[0]));
@@ -380,6 +455,181 @@ std::string rangeName(claws::Client& client, const std::string& sku) {
 std::string rangeStyle(const Style& style) {
     std::string line2;
     return resolveStyle(style, "", line2);
+}
+
+// ---------------------------------------------------------------------------
+// The image style
+// ---------------------------------------------------------------------------
+
+// The label itself: LABEL_WIDTH and LABEL_HEIGHT in lipgloss's service.py, the
+// geometry every rendered style is drawn at.
+//
+// The stock is precut at 12x40mm and the head lays down 8 pixels to the
+// millimetre, which is where both numbers come from -- 12mm across is 96 and
+// 40mm along is 320. They are not a choice anything here gets to make.
+//
+// Named for the printed orientation. lipgloss draws a label 320x96 and turns it
+// a quarter before printing, so the file the head receives is 96 across and 320
+// long. It turns nothing for an image, so this is the size SGUMI has to produce
+// itself, already the right way round.
+constexpr int kLabelPrintWidth = 96;    // 12mm, LABEL_HEIGHT over there
+constexpr int kLabelPrintLength = 320;  // 40mm, LABEL_WIDTH over there
+
+// PRINTER_MAX_WIDTH in packages/lipgloss/src/lipgloss/printer.py, keyed by the
+// model GET /health reports. lipgloss refuses a wider image when the job is
+// submitted, so having the number here is what lets the image be fitted before
+// the upload instead of after the refusal.
+//
+// Matched exactly rather than case-insensitively, because lipgloss does a plain
+// dict lookup: a model spelled differently gets no limit on either side, which
+// is at least the same answer in both places.
+//
+// 0 means no limit, which is what an unlisted model gets over there too.
+int maxLabelWidth(const std::string& model) {
+    if (model == "b1" || model == "b18" || model == "b21") {
+        return 384;
+    }
+
+    if (model == "d11" || model == "d110") {
+        return 96;
+    }
+
+    return 0;
+}
+
+// The filename, for the default description and the "what is loaded" line.
+std::string baseName(const std::string& path) {
+    const size_t slash = path.find_last_of("/\\");
+
+    return slash == std::string::npos ? path : path.substr(slash + 1);
+}
+
+// Turn, then fill the label, then encode. In that order because the label is
+// long in one direction and the turn is what decides which of the image's sides
+// runs along it -- fitting first would measure against the wrong edge.
+//
+// The result is always the whole label, 96 by 320. The stock is precut, so a
+// smaller image does not print a smaller label, it prints the same label with
+// most of it left blank.
+void prepareImage(int maxWidth) {
+    g_image.dirty = false;
+    g_image.prepared = image::Bitmap {};
+    g_image.png.clear();
+    g_image.serial++;
+
+    if (!g_image.source.valid()) {
+        return;
+    }
+
+    image::Bitmap working = image::rotated(g_image.source, g_image.quarterTurns);
+
+    // The label is 96 across on every model that reports a width, since 96 is
+    // the stock and not the printer. Clamped anyway, so a printer narrower than
+    // the label would be fitted to rather than refused.
+    const int targetWidth = maxWidth > 0
+        ? std::min(kLabelPrintWidth, maxWidth)
+        : kLabelPrintWidth;
+    const int targetLength = kLabelPrintLength;
+
+    if (g_image.stretch) {
+        // Straight to the label's shape, aspect ratio and all. A square logo
+        // comes out three times taller than it is wide, which is the trade the
+        // checkbox is offering.
+        working = image::scaled(working, targetWidth, targetLength);
+    } else {
+        // As large as fits with the proportions intact, then centred. Whichever
+        // side runs out first sets the scale, and the other gets white.
+        const double byWidth =
+            static_cast<double>(targetWidth) / static_cast<double>(working.width);
+        const double byLength =
+            static_cast<double>(targetLength) / static_cast<double>(working.height);
+        const double ratio = std::min(byWidth, byLength);
+
+        // Floored at one so a very long, very thin image cannot round away to
+        // nothing on its short side.
+        working = image::scaled(
+            working,
+            std::max(1, static_cast<int>(working.width * ratio + 0.5)),
+            std::max(1, static_cast<int>(working.height * ratio + 0.5)));
+
+        working = image::paddedTo(working, targetWidth, targetLength);
+    }
+
+    g_image.prepared = std::move(working);
+
+    if (!image::encodePng(g_image.prepared, g_image.png)) {
+        g_image.error = "That image could not be encoded as a PNG.";
+        g_image.prepared = image::Bitmap {};
+    }
+}
+
+// Reads a picked file and makes it the loaded image. Anything already loaded is
+// kept when this fails, so a mistyped path does not clear a good one.
+void loadImage(const std::string& path, int maxWidth) {
+    image::Bitmap decoded;
+    std::string error;
+
+    if (!image::decodeFile(path.c_str(), decoded, error)) {
+        g_image.error = error;
+        return;
+    }
+
+    g_image.error.clear();
+    g_image.source = std::move(decoded);
+    g_image.path = path;
+    g_image.name = baseName(path);
+
+    // The filename is the description unless one has been typed. It is a far
+    // better queue row than a blank, and it is what someone would have typed
+    // anyway.
+    if (blank(g_image.description)) {
+        std::snprintf(g_image.description, sizeof(g_image.description), "%s",
+                      g_image.name.c_str());
+    }
+
+    // A new file is measured against the same knobs the last one used, which is
+    // what someone printing a batch of images expects.
+    prepareImage(maxWidth);
+}
+
+void SDLCALL onFilePicked(void* userdata, const char* const* filelist, int) {
+    auto* picked = static_cast<PickedFile*>(userdata);
+
+    std::lock_guard<std::mutex> lock(picked->mutex);
+    picked->waiting = false;
+
+    if (!filelist) {
+        picked->error = SDL_GetError();
+        picked->ready = true;
+        return;
+    }
+
+    // An empty list is a cancel, which is not an outcome worth reporting.
+    if (!filelist[0]) {
+        return;
+    }
+
+    picked->path = filelist[0];
+    picked->error.clear();
+    picked->ready = true;
+}
+
+// The image style's equivalent of printBlocker.
+//
+// There is deliberately no "too wide" case. prepareImage reduces anything
+// oversize whatever the width setting says, so the only way to reach lipgloss's
+// own refusal would be a bug in here -- and a check for it would be a branch
+// that never runs and never gets tested.
+const char* imageBlocker() {
+    if (!g_image.source.valid()) {
+        return "Choose an image.";
+    }
+
+    if (!g_image.prepared.valid() || g_image.png.empty()) {
+        return "That image could not be prepared.";
+    }
+
+    return nullptr;
 }
 
 // Why the Print button is disabled, or nullptr when it is not. lipgloss checks
@@ -587,8 +837,16 @@ float fieldWidth() {
     return std::min(std::max(avail, 80.0f), kFieldMaxWidth);
 }
 
-// One of two pairs sharing the row. Falls back to something usable rather than
-// going negative when the window is dragged narrow.
+// One of two pairs sharing the row.
+//
+// Must be called before either label is drawn, and the answer used for both
+// fields. fieldLabel moves the cursor, so asking again halfway along the row
+// measures what the first pair left rather than half the row -- which took the
+// second field down to the 70 pixel floor below, and an InputInt at 70 pixels
+// is two step buttons with no room left for the number they step. That is the
+// whole reason the quantity box looked like a pair of buttons.
+//
+// Floors rather than going negative when the window is dragged narrow.
 float halfFieldWidth() {
     const float avail = ImGui::GetContentRegionAvail().x;
     const float perPair = (avail - ImGui::GetStyle().ItemSpacing.x) * 0.5f;
@@ -806,6 +1064,12 @@ void submitPreview(lipgloss::Client& client, claws::Client& claws,
 struct PreviewPanel {
     image::Texture texture;
     unsigned long long uploaded = 0;
+
+    // The picked image, held apart from the label above. Two textures rather
+    // than one because the two have independent serials, and sharing would mean
+    // re-uploading whichever was displaced every time the style changed.
+    image::Texture image;
+    unsigned long long imageUploaded = 0;
 };
 
 // Sits above the form, always present, so the label being described is the
@@ -815,6 +1079,12 @@ struct PreviewPanel {
 // scaled up for a screen, and letting that set the window's width would make
 // the whole app as wide as a 960px preview for no benefit.
 constexpr float kPreviewMaxWidth = 420.0f;
+
+// And a cap the other way, which only an image label ever reaches. A rendered
+// label is three times wider than it is tall, but an image fills the whole
+// 96x320 stock, so magnifying it for a screen makes it tall rather than wide --
+// far enough to push the entire form off the bottom if nothing said otherwise.
+constexpr float kPreviewMaxHeight = 420.0f;
 
 // A label-shaped blank, drawn rather than fetched.
 //
@@ -850,12 +1120,92 @@ void drawPlaceholderLabel(float width) {
     ImGui::Dummy(size);
 }
 
+// The image style's preview, which is not fetched from anywhere: what is drawn
+// here is the very bitmap that is about to be uploaded, so it cannot drift from
+// what prints the way a rendered preview could.
+void drawImagePreview(
+    const lipgloss::PreviewResult& preview,
+    SDL_GPUDevice* device,
+    PreviewPanel& panel)
+{
+    const bool dithered = !preview.png.empty();
+
+    if (dithered && preview.serial != panel.uploaded) {
+        panel.uploaded = preview.serial;
+        panel.texture.load(device, preview.png.data(), preview.png.size());
+    }
+
+    if (!dithered && g_image.serial != panel.imageUploaded) {
+        panel.imageUploaded = g_image.serial;
+
+        if (g_image.png.empty()) {
+            panel.image.reset();
+        } else {
+            panel.image.load(device, g_image.png.data(), g_image.png.size());
+        }
+    }
+
+    image::Texture& texture = dithered ? panel.texture : panel.image;
+    const float limit =
+        std::min(ImGui::GetContentRegionAvail().x, kPreviewMaxWidth);
+
+    if (!texture.valid()) {
+        drawPlaceholderLabel(limit);
+    } else {
+        const float naturalW = static_cast<float>(texture.width());
+        const float naturalH = static_cast<float>(texture.height());
+
+        // Only ever shrinks, like the label preview. lipgloss has already
+        // magnified the dither with nearest neighbour, and enlarging it again
+        // here with a smooth sampler would average the dots back into grey --
+        // which is the one thing this preview exists to avoid.
+        //
+        // Bounded both ways, since a label 320 long is the tall one.
+        const float scale = std::min(
+            1.0f,
+            std::min(naturalW > 0.0f ? limit / naturalW : 1.0f,
+                     naturalH > 0.0f ? kPreviewMaxHeight / naturalH : 1.0f));
+
+        ImGui::Image(texture.id(), ImVec2(naturalW * scale, naturalH * scale));
+    }
+
+    if (!g_image.error.empty()) {
+        ImGui::PushTextWrapPos(0.0f);
+        ImGui::TextColored(kBad, "%s", g_image.error.c_str());
+        ImGui::PopTextWrapPos();
+        return;
+    }
+
+    if (!g_image.prepared.valid()) {
+        return;
+    }
+
+    if (preview.state == lipgloss::PreviewResult::State::Pending) {
+        ImGui::TextDisabled("Dithering...");
+    } else if (!preview.error.empty()) {
+        // Named rather than passed over. The undithered image on screen looks
+        // better than the label is going to, so letting it stand unlabelled
+        // would be the preview telling a comfortable lie.
+        ImGui::PushTextWrapPos(0.0f);
+        ImGui::TextColored(kWarn, "Not dithered: %s", preview.error.c_str());
+        ImGui::PopTextWrapPos();
+    } else if (dithered) {
+        ImGui::TextDisabled("As the printer will dither it. Prints at %d x %d.",
+                            g_image.prepared.width, g_image.prepared.height);
+    }
+}
+
 void drawPreview(
     const lipgloss::PreviewResult& preview,
     const Style& style,
     SDL_GPUDevice* device,
     PreviewPanel& panel)
 {
+    if (style.isImage) {
+        drawImagePreview(preview, device, panel);
+        return;
+    }
+
     image::Texture& texture = panel.texture;
 
     // Uploaded only when the bytes actually change, rather than decoding the
@@ -909,11 +1259,146 @@ void drawPreview(
     }
 }
 
+// The image style's fields, in place of style/SKU/lines. Returns true when
+// something changed that the prepared bitmap depends on.
+bool drawImageFields(SDL_Window* window, int maxWidth) {
+    bool changed = false;
+
+    fieldLabel("Image");
+
+    // Read once for the whole function. The dialog runs on its own thread, so
+    // without this the button could be drawn enabled and the label beside it
+    // drawn as though a dialog were open, from the same frame.
+    bool waiting = false;
+
+    {
+        std::lock_guard<std::mutex> lock(g_picked.mutex);
+        waiting = g_picked.waiting;
+    }
+
+    ImGui::BeginDisabled(waiting);
+
+    if (ImGui::Button("Choose image...")) {
+        // The filters are what stb_image can decode, so nothing offered here
+        // can fail for being the wrong kind of file. The platform is free to
+        // ignore them, which is why decodeFile still reports its own errors.
+        static const SDL_DialogFileFilter kFilters[] = {
+            { "Images", "png;jpg;jpeg;bmp;gif;tga;psd" },
+            { "All files", "*" },
+        };
+
+        {
+            std::lock_guard<std::mutex> lock(g_picked.mutex);
+            g_picked.waiting = true;
+        }
+
+        SDL_ShowOpenFileDialog(onFilePicked, &g_picked, window, kFilters,
+                               SDL_arraysize(kFilters), nullptr, false);
+    }
+
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+
+    if (waiting) {
+        ImGui::TextDisabled("Choosing...");
+    } else if (!g_image.name.empty()) {
+        ImGui::TextUnformatted(g_image.name.c_str());
+    } else {
+        ImGui::TextDisabled("Nothing chosen.");
+    }
+
+    if (g_image.source.valid()) {
+        fieldLabel(" ");
+        ImGui::TextDisabled("%d x %d in the file.",
+                            g_image.source.width, g_image.source.height);
+    }
+
+    // Measured before either label moves the cursor, and used for both fields.
+    const float pairWidth = halfFieldWidth();
+
+    fieldLabel("Turn");
+    ImGui::SetNextItemWidth(pairWidth);
+
+    // Clockwise, and named in degrees rather than in turns, because the label
+    // on the roll is what someone is picturing and it is not measured in turns.
+    static const char* kTurns[] = { "None", "90\xc2\xb0", "180\xc2\xb0", "270\xc2\xb0" };
+
+    if (ImGui::Combo("##turn", &g_image.quarterTurns, kTurns, 4)) {
+        changed = true;
+    }
+
+    ImGui::SameLine();
+    fieldLabel("Quantity");
+    ImGui::SetNextItemWidth(pairWidth);
+    ImGui::InputInt("##imageCopies", &g_image.copies);
+    g_image.copies = std::clamp(g_image.copies, 1, lipgloss::kMaxCopies);
+
+    fieldLabel("Fill");
+
+    if (ImGui::Checkbox("Stretch to fill the label", &g_image.stretch)) {
+        changed = true;
+    }
+
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip(
+            "The label is precut at 12x40mm, which is %d by %d pixels, and it "
+            "prints whole either way.\n\n"
+            "On, the image is resized to exactly that, so it covers the label "
+            "but its proportions go with it -- a square picture comes out over "
+            "three times taller than it is wide.\n\n"
+            "Off, it keeps its proportions, sits as large as fits, and the rest "
+            "of the label is left white. Turn is what decides which of its "
+            "sides runs along the long way.",
+            kLabelPrintWidth, kLabelPrintLength);
+    }
+
+    fieldLabel("Text");
+    ImGui::SetNextItemWidth(fieldWidth());
+    ImGui::InputText("##imageDescription", g_image.description,
+                     sizeof(g_image.description));
+
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip(
+            "What the queue calls this job. It is not printed on the label -- "
+            "the image is the whole label. lipgloss keeps the first %d "
+            "characters.",
+            lipgloss::kMaxImageDescription);
+    }
+
+    return changed;
+}
+
 void drawPrint(
     lipgloss::Client& lipglossClient,
     claws::Client& clawsClient,
-    const lipgloss::Snapshot& snapshot)
+    const lipgloss::Snapshot& snapshot,
+    SDL_Window* window)
 {
+    // Drained here rather than in the image branch below, so a file chosen just
+    // before the style was changed is not left sitting in the handover.
+    {
+        std::string picked;
+        std::string error;
+
+        {
+            std::lock_guard<std::mutex> lock(g_picked.mutex);
+
+            if (g_picked.ready) {
+                g_picked.ready = false;
+                picked = g_picked.path;
+                error = g_picked.error;
+                g_picked.path.clear();
+                g_picked.error.clear();
+            }
+        }
+
+        if (!error.empty()) {
+            g_image.error = "The file picker failed: " + error;
+        } else if (!picked.empty()) {
+            loadImage(picked, maxLabelWidth(snapshot.model));
+        }
+    }
+
     // Set by anything that changes how the label looks. Checked once at the
     // end, where the request is known to be valid, so the preview keeps up
     // without the button being pressed.
@@ -923,10 +1408,23 @@ void drawPrint(
     // than one per character.
     bool changed = false;
 
+    const int maxWidth = maxLabelWidth(snapshot.model);
+
     // ---- Style, and quantity beside it when there is one ----
+    //
+    // The image style puts its own quantity box further down, beside the turn
+    // control, so the style combo takes the whole row here the way it does for
+    // a range.
+    //
+    // Measured before the label moves the cursor, and shared with the quantity
+    // box beside it -- see halfFieldWidth.
+    const float stylePairWidth = halfFieldWidth();
+
     fieldLabel("Style");
     ImGui::SetNextItemWidth(
-        g_print.rangeMode ? fieldWidth() : halfFieldWidth());
+        g_print.rangeMode || kStyles[g_print.styleIndex].isImage
+            ? fieldWidth()
+            : stylePairWidth);
 
     if (ImGui::BeginCombo("##style", kStyles[g_print.styleIndex].label)) {
         for (int i = 0; i < kStyleCount; ++i) {
@@ -941,6 +1439,16 @@ void drawPrint(
             const bool selected = i == g_print.styleIndex;
 
             if (ImGui::Selectable(kStyles[i].label, selected)) {
+                // Crossing between a rendered label and an image changes which
+                // endpoint fills the one preview slot, so what is in it now
+                // describes the wrong thing entirely rather than merely being
+                // out of date. Dropped, and the image asked for again.
+                if (kStyles[i].isImage != kStyles[g_print.styleIndex].isImage) {
+                    lipglossClient.clearPreview();
+                    g_print.previewOf.clear();
+                    g_image.previewedSerial = 0;
+                }
+
                 g_print.styleIndex = i;
                 changed = true;
             }
@@ -960,15 +1468,27 @@ void drawPrint(
     // exactly why changing the style used to leave the preview alone.
     const Style& style = kStyles[g_print.styleIndex];
 
-    if (!g_print.rangeMode) {
+    if (!g_print.rangeMode && !style.isImage) {
         ImGui::SameLine();
         fieldLabel("Quantity");
-        ImGui::SetNextItemWidth(halfFieldWidth());
+        ImGui::SetNextItemWidth(stylePairWidth);
         ImGui::InputInt("##copies", &g_print.copies);
         g_print.copies = std::clamp(g_print.copies, 1, lipgloss::kMaxCopies);
     }
 
-    if (g_print.rangeMode) {
+    if (style.isImage) {
+        // ---- A picture, in place of everything a rendered label needs ----
+        //
+        // Rebuilt here rather than inside the fields, so one frame's worth of
+        // changes costs one resample no matter how many of them there were.
+        if (drawImageFields(window, maxWidth)) {
+            g_image.dirty = true;
+        }
+
+        if (g_image.dirty) {
+            prepareImage(maxWidth);
+        }
+    } else if (g_print.rangeMode) {
         // ---- A range of SKUs, one label each ----
         fieldLabel("From SKU");
         ImGui::SetNextItemWidth(fieldWidth());
@@ -1142,6 +1662,13 @@ void drawPrint(
     }
 
     // ---- The mode switch ----
+    //
+    // Hidden for the image style rather than greyed: a range is one label per
+    // SKU and an image has no SKU, so the two have nothing to say to each
+    // other. Selecting the image style from inside a range is already
+    // impossible, since the list only offers styles that render a SKU.
+    ImGui::BeginDisabled(style.isImage);
+
     if (ImGui::Checkbox("Range print", &g_print.rangeMode)) {
         // The style list shrinks on the way in, so a selection that is no
         // longer offered has to move -- otherwise the combo would show a style
@@ -1166,6 +1693,7 @@ void drawPrint(
         ImGui::SetTooltip("Print one label per SKU across a range.");
     }
 
+    ImGui::EndDisabled();
     ImGui::Spacing();
 
     // ---- What can be pressed, and why not ----
@@ -1176,7 +1704,9 @@ void drawPrint(
     int rangeTo = 0;
     const char* blocker = nullptr;
 
-    if (g_print.rangeMode) {
+    if (style.isImage) {
+        blocker = imageBlocker();
+    } else if (g_print.rangeMode) {
         if (!skuNumber(g_print.rangeFrom, rangeFrom)) {
             blocker = "Enter a starting SKU.";
         } else if (!skuNumber(g_print.rangeTo, rangeTo)) {
@@ -1205,7 +1735,37 @@ void drawPrint(
         g_print.previewStale = true;
     }
 
-    if (g_print.previewStale && blocker == nullptr && snapshot.reachable) {
+    // The image style has its own trigger: a prepared bitmap, rather than a
+    // form that has stopped being edited. Not gated on `blocker` either, since
+    // an image too wide to print is still worth seeing dithered -- that is how
+    // someone decides whether to turn it or shrink it.
+    if (style.isImage && snapshot.reachable &&
+        g_image.prepared.valid() && !g_image.png.empty() &&
+        g_image.serial != g_image.previewedSerial) {
+        g_image.previewedSerial = g_image.serial;
+
+        // Magnified as far as fits the panel and no further. Asking for more
+        // and shrinking it here would only hand the GPU's smooth sampler a
+        // dither to average away, so the magnification is chosen to be the one
+        // that gets displayed.
+        //
+        // Measured against the shape it comes back in, which is the label
+        // turned for reading: the 320 runs across, not down.
+        const int shownWidth = std::max(g_image.prepared.height, 1);
+        const int shownHeight = std::max(g_image.prepared.width, 1);
+
+        const int scale = std::clamp(
+            std::min(static_cast<int>(kPreviewMaxWidth) / shownWidth,
+                     static_cast<int>(kPreviewMaxHeight) / shownHeight),
+            1,
+            lipgloss::kMaxPreviewScale);
+
+        lipglossClient.submitImagePreview(g_image.png, scale,
+                                          lipgloss::kPreviewRotate);
+    }
+
+    if (g_print.previewStale && !style.isImage && blocker == nullptr &&
+        snapshot.reachable) {
         // Still checked against what is showing: completing a form without
         // having altered what the label says asks lipgloss for nothing.
         if (requestSignature(style) != g_print.previewOf) {
@@ -1218,7 +1778,19 @@ void drawPrint(
     ImGui::BeginDisabled(disabled);
 
     if (ImGui::Button("Print")) {
-        if (g_print.rangeMode) {
+        if (style.isImage) {
+            lipgloss::ImageRequest request;
+            request.png = g_image.png;
+            request.copies = g_image.copies;
+
+            // The filename when the box has been emptied, because a blank
+            // Description column in the queue names nothing at all.
+            request.description = blank(g_image.description)
+                ? g_image.name
+                : g_image.description;
+
+            lipglossClient.submitImage(std::move(request));
+        } else if (g_print.rangeMode) {
             // One entry per SKU in the span. Unknown SKUs are given their own
             // SKU as the text, so a gap in the range still prints a label that
             // identifies its bin rather than failing the whole job.
@@ -1261,9 +1833,23 @@ void drawPrint(
         ImGui::TextColored(kBad, "lipgloss is unreachable.");
     } else if (blocker) {
         ImGui::TextDisabled("%s", blocker);
+    } else if (style.isImage && action.state == lipgloss::ActionResult::State::Idle) {
+        // Both, because they answer different questions: the size says whether
+        // the image fitted the way it was meant to, and the count is the one a
+        // roll gets spent on.
+        ImGui::TextDisabled("%d x %d, %d label%s.",
+                            g_image.prepared.width, g_image.prepared.height,
+                            g_image.copies, g_image.copies == 1 ? "" : "s");
     } else if (g_print.rangeMode) {
         const int total = rangeTo - rangeFrom + 1;
         ImGui::TextDisabled("%d label%s.", total, total == 1 ? "" : "s");
+    } else if (action.state == lipgloss::ActionResult::State::Idle) {
+        // A range has said this all along and an image now does too. A plain
+        // label saying nothing meant the one mode where the quantity box is the
+        // only thing between you and a hundred labels was also the one mode
+        // that never repeated the number back.
+        ImGui::TextDisabled("%d label%s.", g_print.copies,
+                            g_print.copies == 1 ? "" : "s");
     } else if (isQueueAction(action.kind)) {
         // Reported under the queue, not here. Without this a resume would land
         // in the print status line as "Job -1 queued", and a cancel's outcome
@@ -1749,7 +2335,7 @@ int runSgumi() {
 
             ImGui::Spacing();
             ImGui::SeparatorText("Print");
-            drawPrint(client, clawsClient, snapshot);
+            drawPrint(client, clawsClient, snapshot, window);
 
             ImGui::Spacing();
             ImGui::SeparatorText("Print queue");
@@ -1927,6 +2513,11 @@ int runSgumi() {
     // after SDL_DestroyGPUDevice below, which is a null dereference -- the
     // exact crash an earlier version of this shipped with.
     previewPanel.texture.reset();
+
+    // Both, and before the device goes: releasing a texture needs the device
+    // that made it, so one left to its destructor would be freed against a
+    // dangling handle.
+    previewPanel.image.reset();
 
     ImGui_ImplSDLGPU3_Shutdown();
     ImGui_ImplSDL3_Shutdown();

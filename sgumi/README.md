@@ -42,7 +42,7 @@ Five settings, all editable under **SGUMI → Settings**:
 
 The tokens are separate secrets: `lipgloss_token` must match `lipgloss.yaml` on the printer host, `claws_token` must match `claws.yaml` on the inventory host.
 
-`poll_seconds` is how often the queue is re-read, clamped to 1–60. It's a setting because where SGUMI runs decides what's reasonable: on the kiosk lipgloss is the same machine and a poll costs nothing, so 1 is fine there, while the default is plenty over the tailnet. It only governs how soon a job *someone else* queued turns up — see below.
+`poll_seconds` is how often the queue is re-read, clamped to 1–60. It's a setting because where SGUMI runs decides what's reasonable: on the kiosk lipgloss is the same machine and a poll costs nothing, so 1 is fine there, while the default is plenty over the tailnet. It only governs how soon a job *someone else* queued turns up: printer faults and finished jobs arrive on `/events` as they happen, whatever this is set to.
 
 Without claws every style still prints, you just type the text yourself.
 
@@ -85,7 +85,6 @@ The four vendored checkouts under `third_party/` are pinned to the same commits 
 ## What's next
 In rough order:
 
-1. **Printing an image.** `POST /print/image`, the one print endpoint SGUMI doesn't reach yet.
-2. **Range styles in the bot.** The wire now carries `style` and per-SKU text, so the bot could offer what SGUMI does.
+1. **Range styles in the bot.** The wire now carries `style` and per-SKU text, so the bot could offer what SGUMI does.
 
 [`clients.py`](../packages/illusion-core/src/illusion_core/clients.py) is the reference for every endpoint.

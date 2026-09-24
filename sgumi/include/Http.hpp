@@ -2,6 +2,7 @@
 
 #include <functional>
 #include <string>
+#include <vector>
 
 // The bit of libcurl both service clients need, and nothing more.
 
@@ -36,6 +37,27 @@ Response post(
 // No body: the only DELETE either service has is lipgloss's /queue/{id}, which
 // puts the whole request in the path.
 Response del(const std::string& url, const std::string& token);
+
+// One field of a multipart/form-data body.
+struct FormField {
+    std::string name;
+    std::string value;
+
+    // A non-empty filename makes this the file part, and value is then bytes
+    // rather than text. FastAPI decides between UploadFile and Form on exactly
+    // that, so /print/image wants its image part to carry one and its
+    // description not to.
+    std::string filename;
+    std::string contentType;
+};
+
+// multipart/form-data, which lipgloss's /print/image needs because it takes a
+// file and three form fields rather than JSON. Values are sent as bytes, so a
+// PNG goes through without any encoding step.
+Response postForm(
+    const std::string& url,
+    const std::string& token,
+    const std::vector<FormField>& fields);
 
 // A GET whose body is read as it arrives, for a response that never ends on its
 // own, like lipgloss's /events. Returns when the stream stops, which for a healthy

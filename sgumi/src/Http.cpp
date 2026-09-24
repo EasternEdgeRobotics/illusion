@@ -9,6 +9,10 @@ namespace {
 // that the UI is not stuck on a stale snapshot for a whole poll cycle.
 constexpr long kTimeoutSeconds = 5;
 
+// An upload gets longer than a read does: the body is a PNG rather than a line
+// of JSON, and the far end writes it to disk before answering.
+constexpr long kUploadTimeoutSeconds = 30;
+
 size_t writeToString(char* data, size_t size, size_t count, void* userp) {
     const size_t total = size * count;
     static_cast<std::string*>(userp)->append(data, total);
@@ -113,6 +117,83 @@ Response post(
 
 Response del(const std::string& url, const std::string& token) {
     return perform(url, token, nullptr, "DELETE");
+}
+
+Response postForm(
+    const std::string& url,
+    const std::string& token,
+    const std::vector<FormField>& fields)
+{
+    Response response;
+
+    CURL* curl = curl_easy_init();
+
+    if (!curl) {
+        response.error = "curl_easy_init failed";
+        return response;
+    }
+
+    curl_slist* headers = nullptr;
+
+    if (!token.empty()) {
+        const std::string authorization = "Authorization: Bearer " + token;
+        headers = curl_slist_append(headers, authorization.c_str());
+    }
+
+    // Deliberately not setting Content-Type: curl_mime generates the boundary
+    // and the header to match it, and overriding that produces a body no
+    // multipart parser can read.
+    curl_mime* form = curl_mime_init(curl);
+
+    for (const FormField& field : fields) {
+        curl_mimepart* part = curl_mime_addpart(form);
+
+        curl_mime_name(part, field.name.c_str());
+        curl_mime_data(part, field.value.data(), field.value.size());
+
+        if (!field.filename.empty()) {
+            curl_mime_filename(part, field.filename.c_str());
+        }
+
+        if (!field.contentType.empty()) {
+            curl_mime_type(part, field.contentType.c_str());
+        }
+    }
+
+    curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+    curl_easy_setopt(curl, CURLOPT_MIMEPOST, form);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, writeToString);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response.body);
+
+    // A label's worth of PNG is tens of kilobytes, but it is still an upload
+    // over a tailnet, so this gets more room than a poll does.
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, kUploadTimeoutSeconds);
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, kTimeoutSeconds);
+    curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
+    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+
+    if (headers) {
+        curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    }
+
+    const CURLcode result = curl_easy_perform(curl);
+
+    if (result == CURLE_OK) {
+        response.transportOk = true;
+        curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &response.status);
+    } else {
+        response.error = curl_easy_strerror(result);
+    }
+
+    // Freed before the handle, which is what the curl_mime docs ask for.
+    curl_mime_free(form);
+
+    if (headers) {
+        curl_slist_free_all(headers);
+    }
+
+    curl_easy_cleanup(curl);
+    return response;
 }
 
 namespace {

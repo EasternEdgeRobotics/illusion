@@ -7,6 +7,14 @@
 #define STB_IMAGE_IMPLEMENTATION
 #include <stb_image.h>
 
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#include <stb_image_write.h>
+
+#define STB_IMAGE_RESIZE_IMPLEMENTATION
+#include <stb_image_resize2.h>
+
+#include <algorithm>
+#include <cstdio>
 #include <cstring>
 #include <iostream>
 
@@ -127,6 +135,185 @@ bool Texture::load(SDL_GPUDevice* device, const void* data, size_t length) {
     height_ = height;
 
     return true;
+}
+
+bool decode(const void* data, size_t length, Bitmap& out) {
+    int width = 0;
+    int height = 0;
+    int channels = 0;
+
+    // Four channels for the same reason Texture::load asks for them: everything
+    // downstream of here -- the rotate, the resample, the PNG writer and the
+    // upload to the GPU -- is simpler with one pixel layout than with six.
+    unsigned char* pixels = stbi_load_from_memory(
+        static_cast<const unsigned char*>(data),
+        static_cast<int>(length),
+        &width, &height, &channels, 4);
+
+    if (!pixels) {
+        return false;
+    }
+
+    out.width = width;
+    out.height = height;
+    out.pixels.assign(pixels, pixels + static_cast<size_t>(width) * height * 4);
+
+    stbi_image_free(pixels);
+    return true;
+}
+
+bool decodeFile(const char* path, Bitmap& out, std::string& error) {
+    std::FILE* file = std::fopen(path, "rb");
+
+    if (!file) {
+        error = "Could not open that file.";
+        return false;
+    }
+
+    std::string contents;
+    char chunk[16384];
+
+    while (const size_t read = std::fread(chunk, 1, sizeof(chunk), file)) {
+        contents.append(chunk, read);
+    }
+
+    std::fclose(file);
+
+    if (contents.empty()) {
+        error = "That file is empty.";
+        return false;
+    }
+
+    if (!decode(contents.data(), contents.size(), out)) {
+        // stb's reason is terse but specific, and beats "decoding failed" when
+        // someone has picked a HEIC out of a photo library.
+        const char* reason = stbi_failure_reason();
+        error = std::string("Could not read that as an image") +
+                (reason ? std::string(": ") + reason : "") + ".";
+        return false;
+    }
+
+    return true;
+}
+
+Bitmap rotated(const Bitmap& source, int quarterTurns) {
+    const int turns = ((quarterTurns % 4) + 4) % 4;
+
+    if (!source.valid() || turns == 0) {
+        return source;
+    }
+
+    Bitmap out;
+    const bool swaps = turns % 2 == 1;
+
+    out.width = swaps ? source.height : source.width;
+    out.height = swaps ? source.width : source.height;
+    out.pixels.resize(static_cast<size_t>(out.width) * out.height * 4);
+
+    for (int y = 0; y < source.height; ++y) {
+        for (int x = 0; x < source.width; ++x) {
+            int nx = 0;
+            int ny = 0;
+
+            // Clockwise: the top-left pixel ends up top-right after one turn.
+            switch (turns) {
+            case 1:
+                nx = source.height - 1 - y;
+                ny = x;
+                break;
+            case 2:
+                nx = source.width - 1 - x;
+                ny = source.height - 1 - y;
+                break;
+            default:
+                nx = y;
+                ny = source.width - 1 - x;
+                break;
+            }
+
+            const size_t from = (static_cast<size_t>(y) * source.width + x) * 4;
+            const size_t to = (static_cast<size_t>(ny) * out.width + nx) * 4;
+
+            std::memcpy(&out.pixels[to], &source.pixels[from], 4);
+        }
+    }
+
+    return out;
+}
+
+Bitmap scaled(const Bitmap& source, int width, int height) {
+    if (!source.valid()) {
+        return source;
+    }
+
+    Bitmap out;
+    out.width = std::max(width, 1);
+    out.height = std::max(height, 1);
+    out.pixels.resize(static_cast<size_t>(out.width) * out.height * 4);
+
+    // Straight sRGB rather than premultiplied: nothing here composites, and a
+    // label is opaque by the time the printer sees it.
+    stbir_resize_uint8_srgb(
+        source.pixels.data(), source.width, source.height, 0,
+        out.pixels.data(), out.width, out.height, 0,
+        STBIR_RGBA);
+
+    return out;
+}
+
+Bitmap paddedTo(const Bitmap& source, int width, int height) {
+    if (!source.valid() ||
+        (width <= source.width && height <= source.height)) {
+        return source;
+    }
+
+    Bitmap out;
+    out.width = std::max(width, source.width);
+    out.height = std::max(height, source.height);
+
+    // Opaque white, because this is label stock: 255 across all four channels
+    // rather than a transparent field, which lipgloss would only have to
+    // composite onto white anyway.
+    out.pixels.assign(static_cast<size_t>(out.width) * out.height * 4, 255);
+
+    // Left over pixels go after the image rather than before it, so an odd
+    // margin leans one pixel toward the far edge rather than splitting a pixel
+    // that cannot be split.
+    const int offsetX = (out.width - source.width) / 2;
+    const int offsetY = (out.height - source.height) / 2;
+
+    for (int y = 0; y < source.height; ++y) {
+        const size_t from = static_cast<size_t>(y) * source.width * 4;
+        const size_t to =
+            (static_cast<size_t>(y + offsetY) * out.width + offsetX) * 4;
+
+        std::memcpy(&out.pixels[to], &source.pixels[from],
+                    static_cast<size_t>(source.width) * 4);
+    }
+
+    return out;
+}
+
+bool encodePng(const Bitmap& source, std::string& out) {
+    if (!source.valid()) {
+        return false;
+    }
+
+    out.clear();
+
+    // Written through a callback rather than to a file: this goes straight into
+    // a multipart body, and a temporary on disk would be one more thing to
+    // clean up on a kiosk that gets power-cycled.
+    const auto append = [](void* context, void* data, int size) {
+        static_cast<std::string*>(context)->append(
+            static_cast<const char*>(data), static_cast<size_t>(size));
+    };
+
+    const int ok = stbi_write_png_to_func(
+        append, &out, source.width, source.height, 4,
+        source.pixels.data(), source.width * 4);
+
+    return ok != 0 && !out.empty();
 }
 
 }  // namespace image

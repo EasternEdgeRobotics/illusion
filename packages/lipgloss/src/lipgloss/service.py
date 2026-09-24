@@ -24,6 +24,8 @@ from lipgloss.label_maker import (
     LabelMaker,
     LABEL_STYLES,
     PREVIEW_MAX_SCALE,
+    dithered_png,
+    flattened_for_print,
     missing_values,
     preview_png,
 )
@@ -349,7 +351,16 @@ def create_app(config_path="./lipgloss.yaml"):
         reply_to: str | None = Form(default=None),
     ):
         path = Path(_label_path("image") + ".png")
-        path.write_bytes(await file.read())
+
+        # Composited onto white rather than written through untouched. The head
+        # has no alpha channel and niimprint does not look for one, so a logo
+        # on a transparent background would otherwise burn the whole label.
+        # /preview/image flattens through the same helper, so what was looked at
+        # is what comes out.
+        try:
+            flattened_for_print(await file.read()).save(path, format="PNG")
+        except OSError as e:
+            raise HTTPException(status_code=422, detail=f"unreadable image: {e}")
 
         job, message = printqueue.add(
             str(path), description[:60], copies=copies, reply_to=reply_to, source=source
@@ -378,6 +389,36 @@ def create_app(config_path="./lipgloss.yaml"):
             return Response(content=preview_png(output, request.scale), media_type="image/png")
         finally:
             Path(output).unlink(missing_ok=True)
+
+    @app.post("/preview/image", dependencies=[Depends(require_token)])
+    async def preview_image(
+        file: UploadFile,
+        scale: int = Form(default=3),
+        rotate: int = Form(default=0),
+    ):
+        """An uploaded image as the printer would lay it down, printing nothing.
+
+        The counterpart to /preview, for the one kind of label this service does
+        not render: /print/image hands the bytes to the print head untouched, so
+        without this there is no way to find out what the dithering does to a
+        picture except to spend a label on it.
+
+        rotate turns the answer for reading, not for printing. An image arrives
+        here the way the head wants it -- 96 across and 320 long -- and a label
+        is read the other way round, so a caller showing one beside a rendered
+        preview asks for 270 and gets the same shape /preview returns.
+
+        Nothing is written to disk. Unlike /print/image there is no job at the
+        end of this, so there is nothing for a file to outlive.
+        """
+        try:
+            content = dithered_png(await file.read(), scale, rotate)
+        except OSError as e:
+            # UnidentifiedImageError is an OSError, and so is a truncated file.
+            # Both are the caller's problem rather than this service's.
+            raise HTTPException(status_code=422, detail=f"unreadable image: {e}")
+
+        return Response(content=content, media_type="image/png")
 
     @app.post("/render", dependencies=[Depends(require_token)])
     async def render(request: RenderRequest):
