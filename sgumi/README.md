@@ -90,9 +90,7 @@ lipgloss refuses the job if the roll can't fit the whole run.
 
 Without that split, a token typo and a dead service look identical, which on a kiosk means someone power-cycles a laptop that was never the problem.
 
-While the queue is paused a **Resume queue** button appears under it. lipgloss answers that with its own account of what happened, which is shown verbatim — it returns success even when it could not resume, so "the queue is staying paused" is a normal reply and not an error.
-
-The indicator only describes lipgloss. claws is on the About page instead, since it not being reachable doesn't stop anything printing.
+The indicator only describes lipgloss. claws is on the About page instead, since it not being reachable doesn't stop anything printing
 
 ## Keyboard
 | Key | Does                          |
@@ -117,9 +115,8 @@ The four vendored checkouts under `third_party/` are pinned to the same commits 
 ## What's next
 In rough order:
 
-1. **The rest of queue control.** Resume is wired up; `POST /queue/clear` and `DELETE /queue/{id}` are not.
-2. **SSE.** `GET /events` replaces the one-second poll.
-3. **Printing an image.** `POST /print/image`, the one print endpoint SGUMI doesn't reach yet.
-4. **Range styles in the bot.** The wire now carries `style` and per-SKU text, so the bot could offer what SGUMI does.
+1. **SSE.** `GET /events` replaces the one-second poll.
+2. **Printing an image.** `POST /print/image`, the one print endpoint SGUMI doesn't reach yet.
+3. **Range styles in the bot.** The wire now carries `style` and per-SKU text, so the bot could offer what SGUMI does.
 
 [`clients.py`](../packages/illusion-core/src/illusion_core/clients.py) is the reference for every endpoint.

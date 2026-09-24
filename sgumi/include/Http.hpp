@@ -22,8 +22,8 @@ struct Response {
 void globalInit();
 void globalCleanup();
 
-// Both send Authorization: Bearer <token> when token is non-empty, and both
-// block the calling thread, callers are expected to be on a worker.
+// All three send Authorization: Bearer <token> when token is non-empty, and
+// all three block the calling thread, callers are expected to be on a worker.
 Response get(const std::string& url, const std::string& token);
 
 // Content-Type: application/json, with body sent verbatim.
@@ -31,6 +31,10 @@ Response post(
     const std::string& url,
     const std::string& token,
     const std::string& body);
+
+// No body: the only DELETE either service has is lipgloss's /queue/{id}, which
+// puts the whole request in the path.
+Response del(const std::string& url, const std::string& token);
 
 // Joins a base URL and an absolute path without doubling the slash --
 // "http://host:8081//health" works but looks like a bug in every log line it

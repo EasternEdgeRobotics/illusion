@@ -379,6 +379,16 @@ constexpr ImVec4 kGood { 0.35f, 0.80f, 0.45f, 1.0f };
 constexpr ImVec4 kWarn { 0.90f, 0.65f, 0.30f, 1.0f };
 constexpr ImVec4 kBad  { 0.88f, 0.36f, 0.36f, 1.0f };
 
+// Which pane owns an outcome. The client keeps one result slot for every
+// action, so each pane has to ignore the results that are not its own --
+// without this a cancel would be announced under the Print button, where the
+// only wording available is about a job that was never submitted.
+bool isQueueAction(lipgloss::ActionResult::Kind kind) {
+    return kind == lipgloss::ActionResult::Kind::Resume ||
+           kind == lipgloss::ActionResult::Kind::Clear ||
+           kind == lipgloss::ActionResult::Kind::Cancel;
+}
+
 // The state of lipgloss in 3 words
 struct Status {
     ImVec4 colour;
@@ -1206,7 +1216,12 @@ void drawPrint(
 
     ImGui::SameLine();
 
-    if (pending) {
+    if (pending && isQueueAction(action.kind)) {
+        // The client has one action in flight at a time, so a resume, clear or
+        // cancel is holding the slot the Print button needs. Saying which is
+        // better than "Sending..." for a request nobody made from here.
+        ImGui::TextDisabled("Waiting on the queue...");
+    } else if (pending) {
         ImGui::TextDisabled("Sending...");
     } else if (!snapshot.reachable) {
         ImGui::TextColored(kBad, "lipgloss is unreachable.");
@@ -1215,15 +1230,13 @@ void drawPrint(
     } else if (g_print.rangeMode) {
         const int total = rangeTo - rangeFrom + 1;
         ImGui::TextDisabled("%d label%s.", total, total == 1 ? "" : "s");
+    } else if (isQueueAction(action.kind)) {
+        // Reported under the queue, not here. Without this a resume would land
+        // in the print status line as "Job -1 queued", and a cancel's outcome
+        // would read as a print that failed.
     } else {
         switch (action.state) {
         case lipgloss::ActionResult::State::Ok:
-            if (action.kind == lipgloss::ActionResult::Kind::Resume) {
-                // Reported under the queue, not here. Without this the resume
-                // would land in the print status line as "Job -1 queued".
-                break;
-            }
-
             // A job accepted onto a paused queue is not printing, and saying
             // "queued" without that would be misleading.
             if (action.queuePaused) {
@@ -1245,7 +1258,9 @@ void drawPrint(
         }
     }
 
-    if (g_print.rangeMode) {
+    // Range mode puts its outcome on its own line rather than beside the
+    // button, because the line above it is already the coverage count.
+    if (g_print.rangeMode && !isQueueAction(action.kind)) {
         if (action.state == lipgloss::ActionResult::State::Ok) {
             ImGui::TextColored(kGood, "Job %lld queued.", action.jobId);
         } else if (action.state == lipgloss::ActionResult::State::Failed) {
@@ -1254,6 +1269,107 @@ void drawPrint(
             ImGui::PopTextWrapPos();
         }
     }
+}
+
+// The job id a row carries, or false when it does not carry one. It arrives as
+// text because the same rows feed illusion's terminal table, and DELETE
+// /queue/{id} wants the number back.
+bool jobNumber(const std::string& text, long long& out) {
+    if (text.empty() ||
+        text.find_first_not_of("0123456789") != std::string::npos) {
+        return false;
+    }
+
+    // strtoll rather than stoll, for the same reason skuNumber uses strtol: a
+    // number too long to fit is a return value here, not an exception.
+    errno = 0;
+    const long long parsed = std::strtoll(text.c_str(), nullptr, 10);
+
+    if (errno != 0 || parsed < 0) {
+        return false;
+    }
+
+    out = parsed;
+    return true;
+}
+
+// What is in flight, for the line beside the queue buttons. A print can hold
+// the slot too, and saying so explains why the buttons are greyed.
+const char* pendingQueueLabel(lipgloss::ActionResult::Kind kind) {
+    switch (kind) {
+    case lipgloss::ActionResult::Kind::Resume:
+        return "Resuming...";
+    case lipgloss::ActionResult::Kind::Clear:
+        return "Clearing...";
+    case lipgloss::ActionResult::Kind::Cancel:
+        return "Cancelling...";
+    default:
+        return "Sending a print...";
+    }
+}
+
+// How the outcome of a queue action reads. Every one of these can come back 200
+// having changed nothing, so the colour is taken from what lipgloss says it
+// did rather than from the fact that it answered at all.
+ImVec4 queueActionColour(const lipgloss::ActionResult& action,
+                         const lipgloss::Snapshot& snapshot) {
+    if (action.state == lipgloss::ActionResult::State::Failed) {
+        return kBad;
+    }
+
+    switch (action.kind) {
+    case lipgloss::ActionResult::Kind::Resume:
+        // Whether the printer actually came back is in the next poll. Until
+        // the queue reports itself unpaused, this stays a warning.
+        return snapshot.paused ? kWarn : kGood;
+
+    case lipgloss::ActionResult::Kind::Cancel:
+        // Not cancelled is the ordinary answer for a job that finished between
+        // the click and the request, so it is a note rather than a failure.
+        return action.cancelled ? kGood : kWarn;
+
+    default:
+        return kGood;
+    }
+}
+
+constexpr const char* kClearPopup = "Clear the print queue?";
+
+// Clearing cannot be undone on the far end, and the queue is shared -- a run
+// the bot started is as easy to throw away as your own. The counts are what
+// make that visible while there is still time to not do it.
+void drawClearConfirm(const lipgloss::Snapshot& snapshot,
+                      lipgloss::Client& client) {
+    if (!ImGui::BeginPopupModal(kClearPopup, nullptr,
+                                ImGuiWindowFlags_AlwaysAutoResize)) {
+        return;
+    }
+
+    // The queue drained while the question was on screen. There is nothing left
+    // to confirm, so it stops being asked rather than clearing an empty queue.
+    if (snapshot.jobs.empty()) {
+        ImGui::CloseCurrentPopup();
+        ImGui::EndPopup();
+        return;
+    }
+
+    ImGui::Text("%d job(s) and %d label(s) will never print.",
+                snapshot.pendingJobs, snapshot.pendingLabels);
+
+    ImGui::Spacing();
+
+    if (ImGui::Button("Clear the queue")) {
+        client.submitClear();
+        ImGui::CloseCurrentPopup();
+    }
+
+    ImGui::SameLine();
+
+    if (ImGui::Button("Keep them")) {
+        ImGui::CloseCurrentPopup();
+    }
+
+    ImGui::EndPopup();
 }
 
 void drawQueue(const lipgloss::Snapshot& snapshot, lipgloss::Client& client) {
@@ -1282,16 +1398,20 @@ void drawQueue(const lipgloss::Snapshot& snapshot, lipgloss::Client& client) {
         ImGui::PopTextWrapPos();
     }
 
-    // Only while paused. lipgloss stops the queue when the printer needs
+    // Resume, clear and cancel share the client's one action slot, so only one
+    // can be in flight and one line below reports whichever it was.
+    const lipgloss::ActionResult action = client.actionResult();
+    const bool pending =
+        action.state == lipgloss::ActionResult::State::Pending;
+    const bool mine = isQueueAction(action.kind);
+
+    ImGui::Spacing();
+
+    // Resume only while paused. lipgloss stops the queue when the printer needs
     // attention -- out of labels, lid open, unplugged -- and nothing starts
     // printing again until someone says the problem is dealt with. The reason
     // is in the description above, so this is just the acknowledgement.
     if (snapshot.paused) {
-        const lipgloss::ActionResult action = client.actionResult();
-        const bool pending =
-            action.state == lipgloss::ActionResult::State::Pending;
-
-        ImGui::Spacing();
         ImGui::BeginDisabled(pending);
 
         if (ImGui::Button("Resume queue")) {
@@ -1299,23 +1419,37 @@ void drawQueue(const lipgloss::Snapshot& snapshot, lipgloss::Client& client) {
         }
 
         ImGui::EndDisabled();
+        ImGui::SameLine();
+    }
 
-        if (pending) {
-            ImGui::SameLine();
-            ImGui::TextDisabled("Resuming...");
-        } else if (action.kind == lipgloss::ActionResult::Kind::Resume &&
-                   action.state != lipgloss::ActionResult::State::Idle) {
-            // lipgloss answers 200 even when it could not resume -- "still
-            // unable to print, the queue is staying paused" is a successful
-            // request with an unsuccessful outcome. Its own wording is the
-            // only thing that tells the two apart, so it is shown verbatim,
-            // and the colour comes from whether the queue is actually still
-            // paused rather than from the HTTP status.
-            ImGui::Spacing();
-            ImGui::PushTextWrapPos(0.0f);
-            ImGui::TextColored(kWarn, "%s", action.message.c_str());
-            ImGui::PopTextWrapPos();
-        }
+    // Clearing an empty queue is answered politely rather than refused, but
+    // offering the button anyway invites a click that can only be a mistake.
+    ImGui::BeginDisabled(pending || snapshot.jobs.empty());
+
+    if (ImGui::Button("Clear queue")) {
+        ImGui::OpenPopup(kClearPopup);
+    }
+
+    ImGui::EndDisabled();
+
+    // Outside the BeginDisabled above, or the modal's own buttons would inherit
+    // the disabled state from the button that opened it.
+    drawClearConfirm(snapshot, client);
+
+    if (pending) {
+        ImGui::SameLine();
+        ImGui::TextDisabled("%s", pendingQueueLabel(action.kind));
+    } else if (mine && action.state != lipgloss::ActionResult::State::Idle) {
+        // lipgloss's own wording, verbatim. It answers 200 even when it could
+        // not do the thing -- "still unable to print, the queue is staying
+        // paused" is a successful request with an unsuccessful outcome -- so
+        // the message is the only account of what happened, and the colour
+        // comes from the state it left behind rather than from the status code.
+        ImGui::Spacing();
+        ImGui::PushTextWrapPos(0.0f);
+        ImGui::TextColored(queueActionColour(action, snapshot), "%s",
+                           action.message.c_str());
+        ImGui::PopTextWrapPos();
     }
 
     if (snapshot.jobs.empty()) {
@@ -1334,13 +1468,18 @@ void drawQueue(const lipgloss::Snapshot& snapshot, lipgloss::Client& client) {
     // screen; ScrollY above is what makes the overflow reachable.
     const float height = ImGui::GetTextLineHeightWithSpacing() * 12.0f;
 
-    if (ImGui::BeginTable("jobs", 5, kFlags, ImVec2(0.0f, height))) {
+    if (ImGui::BeginTable("jobs", 6, kFlags, ImVec2(0.0f, height))) {
         ImGui::TableSetupScrollFreeze(0, 1);
         ImGui::TableSetupColumn("Job", ImGuiTableColumnFlags_WidthFixed);
         ImGui::TableSetupColumn("Description");
         ImGui::TableSetupColumn("Labels", ImGuiTableColumnFlags_WidthFixed);
         ImGui::TableSetupColumn("Source", ImGuiTableColumnFlags_WidthFixed);
         ImGui::TableSetupColumn("State", ImGuiTableColumnFlags_WidthFixed);
+
+        // No heading: a column of buttons labels itself, and "Cancel" over the
+        // top would read as something that could be clicked.
+        ImGui::TableSetupColumn("##cancel", ImGuiTableColumnFlags_WidthFixed |
+                                                ImGuiTableColumnFlags_NoHeaderLabel);
         ImGui::TableHeadersRow();
 
         for (const lipgloss::Job& job : snapshot.jobs) {
@@ -1355,6 +1494,28 @@ void drawQueue(const lipgloss::Snapshot& snapshot, lipgloss::Client& client) {
             ImGui::TextUnformatted(job.source.c_str());
             ImGui::TableNextColumn();
             ImGui::TextUnformatted(job.state.c_str());
+            ImGui::TableNextColumn();
+
+            long long id = 0;
+
+            // The id arrives as text because the same rows feed a terminal
+            // table. A row that does not carry a number is not one this can
+            // address, so it simply gets no button rather than a broken one.
+            if (!jobNumber(job.jobId, id)) {
+                continue;
+            }
+
+            // The job id, not the row index: ImGui remembers state per id, and
+            // rows shift up every time one finishes printing.
+            ImGui::PushID(static_cast<int>(id));
+            ImGui::BeginDisabled(pending);
+
+            if (ImGui::SmallButton("Cancel")) {
+                client.submitCancel(id);
+            }
+
+            ImGui::EndDisabled();
+            ImGui::PopID();
         }
 
         ImGui::EndTable();

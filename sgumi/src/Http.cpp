@@ -15,13 +15,17 @@ size_t writeToString(char* data, size_t size, size_t count, void* userp) {
     return total;
 }
 
-// Everything both verbs share. A fresh handle per call: these happen at most
+// Everything the verbs share. A fresh handle per call: these happen at most
 // once a second on a worker thread, so handle reuse would buy nothing
 // measurable and cost the rule that nothing here is shared between threads.
+//
+// verb is nullptr for the two libcurl already has a flag for, GET and POST;
+// anything else is spelled out with CUSTOMREQUEST.
 Response perform(
     const std::string& url,
     const std::string& token,
-    const std::string* body)
+    const std::string* body,
+    const char* verb = nullptr)
 {
     Response response;
 
@@ -58,6 +62,10 @@ Response perform(
         // nulls, and libcurl would otherwise strlen it.
         curl_easy_setopt(
             curl, CURLOPT_POSTFIELDSIZE, static_cast<long>(body->size()));
+    }
+
+    if (verb) {
+        curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, verb);
     }
 
     if (headers) {
@@ -101,6 +109,10 @@ Response post(
     const std::string& body)
 {
     return perform(url, token, &body);
+}
+
+Response del(const std::string& url, const std::string& token) {
+    return perform(url, token, nullptr, "DELETE");
 }
 
 std::string join(const std::string& baseUrl, const char* path) {

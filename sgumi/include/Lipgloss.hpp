@@ -14,8 +14,7 @@
 //
 // Mirrors LipglossClient in packages/illusion-core/src/illusion_core/clients.py,
 // which is the authority on the wire format, when an endpoint changes there,
-// it changes here. Only the two read endpoints are implemented so far; the
-// print side follows once the queue view is real.
+// it changes here. Everything but POST /print/image is reached.
 //
 // Nothing here is on a hot path. lipgloss is a USB label printer on the far
 // end, so a poll every second is already far more often than anything can
@@ -104,6 +103,8 @@ struct ActionResult {
         Print,
         Barcodes,
         Resume,
+        Clear,
+        Cancel,
     };
 
     State state = State::Idle;
@@ -119,6 +120,13 @@ struct ActionResult {
     // this separately for exactly that reason, so "queued" is not mistaken for
     // "printed".
     bool queuePaused = false;
+
+    // Kind::Cancel only. DELETE /queue/{id} answers 200 whether or not it
+    // caught the job in time, so "it had already printed" is a successful
+    // request with nothing cancelled. lipgloss returns that as its own field
+    // rather than leaving it to be read out of the message, and it is the
+    // difference between a warning and a failure here.
+    bool cancelled = false;
 };
 
 // lipgloss clamps this to PREVIEW_MAX_SCALE (8) in label_maker.py. 3 is its
@@ -195,6 +203,15 @@ public:
     // since it is the same kind of "did that work?" question.
     void submitResume();
 
+    // POST /queue/clear -- throws away every job that has not printed. There is
+    // no undo on the far end, so the caller is expected to have asked first.
+    void submitClear();
+
+    // DELETE /queue/{jobId} -- pulls one job out. A job that has already
+    // finished is not an error, just a cancel that arrived too late; see
+    // ActionResult::cancelled.
+    void submitCancel(long long jobId);
+
     // POST /preview -- the label this request would print, as a PNG, printing
     // nothing. Takes the same fields; copies is ignored.
     //
@@ -218,6 +235,8 @@ private:
             Print,
             Barcodes,
             Resume,
+            Clear,
+            Cancel,
         };
 
         Kind kind = Kind::Print;
@@ -225,6 +244,9 @@ private:
         int lower = 0;
         int upper = 0;
         std::map<std::string, std::string> line1BySku;
+
+        // Kind::Cancel only -- the job to pull, which goes in the path.
+        long long jobId = -1;
     };
 
     void run();

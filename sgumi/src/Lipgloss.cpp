@@ -158,6 +158,44 @@ void Client::submitResume() {
     wake_.notify_all();
 }
 
+void Client::submitClear() {
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+
+        action_ = ActionResult {};
+        action_.state = ActionResult::State::Pending;
+        action_.kind = ActionResult::Kind::Clear;
+
+        PendingAction pending;
+        pending.kind = PendingAction::Kind::Clear;
+        pendingAction_ = std::move(pending);
+    }
+
+    wake_.notify_all();
+}
+
+void Client::submitCancel(long long jobId) {
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+
+        action_ = ActionResult {};
+        action_.state = ActionResult::State::Pending;
+        action_.kind = ActionResult::Kind::Cancel;
+
+        // Carried on the result as well as the request: the UI names the job in
+        // the answer, and by the time the answer lands the row it was clicked
+        // on may already be gone from the queue.
+        action_.jobId = jobId;
+
+        PendingAction pending;
+        pending.kind = PendingAction::Kind::Cancel;
+        pending.jobId = jobId;
+        pendingAction_ = std::move(pending);
+    }
+
+    wake_.notify_all();
+}
+
 void Client::submitPreview(PrintRequest request) {
     {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -271,6 +309,13 @@ void Client::runAction(const PendingAction& action) {
     case PendingAction::Kind::Resume:
         result.kind = ActionResult::Kind::Resume;
         break;
+    case PendingAction::Kind::Clear:
+        result.kind = ActionResult::Kind::Clear;
+        break;
+    case PendingAction::Kind::Cancel:
+        result.kind = ActionResult::Kind::Cancel;
+        result.jobId = action.jobId;
+        break;
     }
 
     if (baseUrl.empty()) {
@@ -313,15 +358,23 @@ void Client::runAction(const PendingAction& action) {
         }
 
         body["source"] = kSource;
+    } else if (action.kind == PendingAction::Kind::Cancel) {
+        // The whole request is the path. No body, and a verb of its own.
+        path = "/queue/" + std::to_string(action.jobId);
     } else {
-        // Resume takes no body at all. FastAPI is content with an empty JSON
-        // object on a POST that declares no model.
-        path = "/queue/resume";
+        // Resume and clear take no body at all. FastAPI is content with an
+        // empty JSON object on a POST that declares no model.
+        path = action.kind == PendingAction::Kind::Resume
+            ? "/queue/resume"
+            : "/queue/clear";
         body = json::object();
     }
 
-    const http::Response response =
-        http::post(http::join(baseUrl, path.c_str()), token, body.dump());
+    const std::string url = http::join(baseUrl, path.c_str());
+
+    const http::Response response = action.kind == PendingAction::Kind::Cancel
+        ? http::del(url, token)
+        : http::post(url, token, body.dump());
 
     if (!response.transportOk) {
         result.state = ActionResult::State::Failed;
@@ -358,6 +411,28 @@ void Client::runAction(const PendingAction& action) {
 
                 if (result.message.empty()) {
                     result.message = "Queue resumed.";
+                }
+            } else if (action.kind == PendingAction::Kind::Clear) {
+                // Same shape as resume: a message and nothing else. Clearing an
+                // already-empty queue is a 200 that says so, which is the
+                // truth and not a failure.
+                result.state = ActionResult::State::Ok;
+
+                if (result.message.empty()) {
+                    result.message = "Queue cleared.";
+                }
+            } else if (action.kind == PendingAction::Kind::Cancel) {
+                // 200 means lipgloss looked; cancelled says what it found. A
+                // job that finished a moment before the click is a perfectly
+                // successful request that cancelled nothing, so the two are
+                // kept apart rather than folded into the state.
+                result.state = ActionResult::State::Ok;
+                result.cancelled = data.value("cancelled", false);
+
+                if (result.message.empty()) {
+                    result.message = result.cancelled
+                        ? "Cancelled."
+                        : "That job was no longer in the queue.";
                 }
             } else {
                 // lipgloss answers 200 with a null job_id and an explanatory
