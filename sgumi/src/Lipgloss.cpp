@@ -12,8 +12,6 @@ using json = nlohmann::json;
 namespace lipgloss {
 namespace {
 
-constexpr auto kPollInterval = std::chrono::seconds(1);
-
 // What lipgloss records as having asked for a job, and what the queue table
 // shows in its Source column. The kiosk sends "terminal" and the bot sends
 // "discord:<user>", so jobs from here are distinguishable from both.
@@ -68,6 +66,7 @@ void Client::start() {
     }
 
     worker_ = std::thread(&Client::run, this);
+    eventWorker_ = std::thread(&Client::runEvents, this);
 }
 
 void Client::stop() {
@@ -79,6 +78,12 @@ void Client::stop() {
 
     if (worker_.joinable()) {
         worker_.join();
+    }
+
+    // Joined second because it is the slower of the two: an open stream is torn
+    // down from libcurl's progress callback, which fires about once a second.
+    if (eventWorker_.joinable()) {
+        eventWorker_.join();
     }
 }
 
@@ -92,13 +97,37 @@ void Client::setEndpoint(std::string baseUrl, std::string token) {
         // new URL would be a lie for up to a poll interval, so drop it and let
         // the UI say "connecting" until the first poll lands.
         snapshot_ = Snapshot {};
+
+        pollNow_ = true;
+    }
+
+    // Drops whatever stream is open against the old host. The event thread
+    // notices within about a second and dials the new one.
+    endpointGeneration_.fetch_add(1);
+
+    wake_.notify_all();
+}
+
+void Client::setPollInterval(std::chrono::milliseconds interval) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pollInterval_ = std::clamp(interval, kMinPollInterval, kMaxPollInterval);
+}
+
+void Client::refresh() {
+    pollNow();
+}
+
+void Client::pollNow() {
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        pollNow_ = true;
     }
 
     wake_.notify_all();
 }
 
-void Client::refresh() {
-    wake_.notify_all();
+bool Client::eventsConnected() const {
+    return eventsConnected_.load();
 }
 
 void Client::submitPrint(PrintRequest request) {
@@ -252,11 +281,18 @@ void Client::run() {
         // follows already reflects the job just queued.
         std::optional<PendingAction> pending;
         std::optional<PrintRequest> preview;
+        std::chrono::milliseconds interval;
 
         {
             std::lock_guard<std::mutex> lock(mutex_);
             pending.swap(pendingAction_);
             preview.swap(pendingPreview_);
+            interval = pollInterval_;
+
+            // Cleared here rather than after the poll below, so a request that
+            // arrives while that poll is in flight is not swallowed by it: the
+            // answer it wants is from a round that starts after it asked.
+            pollNow_ = false;
         }
 
         if (pending) {
@@ -274,13 +310,95 @@ void Client::run() {
 
         std::unique_lock<std::mutex> lock(mutex_);
 
-        // Predicated on all three, so neither a stop nor submitted work waits
-        // out the remaining interval.
-        wake_.wait_for(lock, kPollInterval, [this] {
+        // Predicated on all four, so none of a stop, submitted work, or a
+        // refresh -- whether it came from the button, a settings change or the
+        // event stream -- waits out the remaining interval.
+        wake_.wait_for(lock, interval, [this] {
             return !running_.load() ||
+                   pollNow_ ||
                    pendingAction_.has_value() ||
                    pendingPreview_.has_value();
         });
+    }
+}
+
+void Client::runEvents() {
+    while (running_.load()) {
+        std::string baseUrl;
+        std::string token;
+
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            baseUrl = baseUrl_;
+            token = token_;
+        }
+
+        // Captured before dialling, so a settings change mid-stream is seen as
+        // a mismatch rather than racing the read of baseUrl_ above.
+        const unsigned long long generation = endpointGeneration_.load();
+
+        const auto keepGoing = [this, generation] {
+            return running_.load() && endpointGeneration_.load() == generation;
+        };
+
+        if (!baseUrl.empty()) {
+            // Whatever is left over from a chunk that ended mid-line. Lives out
+            // here so it survives across callbacks for one connection, and is
+            // thrown away with the connection.
+            std::string buffer;
+
+            http::stream(
+                http::join(baseUrl, "/events"), token,
+                [this](long status) {
+                    // A 401 is a live service refusing us, which is worth not
+                    // calling connected -- the poll's own status line is where
+                    // a bad token gets explained.
+                    eventsConnected_.store(status == 200);
+                },
+                [this, &buffer](const char* data, size_t size) {
+                    buffer.append(data, size);
+                    consumeEvents(buffer);
+                },
+                keepGoing);
+
+            eventsConnected_.store(false);
+        }
+
+        // A dropped stream costs latency and nothing else, so there is no
+        // urgency here -- but a stop should not have to wait it out.
+        std::unique_lock<std::mutex> lock(mutex_);
+        wake_.wait_for(lock, kEventRetryInterval,
+                       [this] { return !running_.load(); });
+    }
+
+    eventsConnected_.store(false);
+}
+
+void Client::consumeEvents(std::string& buffer) {
+    size_t newline;
+
+    while ((newline = buffer.find('\n')) != std::string::npos) {
+        std::string line = buffer.substr(0, newline);
+        buffer.erase(0, newline + 1);
+
+        if (!line.empty() && line.back() == '\r') {
+            line.pop_back();
+        }
+
+        // A blank line ends a frame and a ':' line is a comment, the
+        // keepalive lipgloss sends every twenty seconds is one of those.
+        // lipgloss puts one field in a frame, so a line is all the SSE framing
+        // there is to understand here.
+        if (line.empty() || line[0] == ':' || line.rfind("data: ", 0) != 0) {
+            continue;
+        }
+
+        // The payload is deliberately not read. Every event lipgloss publishes
+        // (printer.fault, job.skipped, job.done) means the queue just
+        // changed in a way worth seeing at once, and none of them describe the
+        // whole of it. GET /queue does. So this is a doorbell, and what it
+        // rings for is a poll.
+        pollNow();
     }
 }
 

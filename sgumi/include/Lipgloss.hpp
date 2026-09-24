@@ -17,9 +17,16 @@
 // it changes here. Everything but POST /print/image is reached.
 //
 // Nothing here is on a hot path. lipgloss is a USB label printer on the far
-// end, so a poll every second is already far more often than anything can
-// change, and the whole point of putting it on a worker thread is that the
-// frame loop never waits on a socket.
+// end, so the whole point of putting it on a worker thread is that the frame
+// loop never waits on a socket.
+//
+// Two threads, not one. The poll thread owns GET /health and GET /queue, which
+// between them describe everything the UI draws. The event thread holds GET
+// /events open and rings a bell when anything lands, because lipgloss publishes
+// only three things. a printer fault, a skipped label, a finished job. and
+// none of them carry queue state. So the stream is a doorbell and /queue stays
+// the source of truth; the stream is what lets the poll be slow without a fault
+// sitting unnoticed for the length of an interval.
 
 namespace lipgloss {
 
@@ -129,6 +136,18 @@ struct ActionResult {
     bool cancelled = false;
 };
 
+// What the poll interval is allowed to be set to. The floor is where the old
+// fixed interval sat and is what a kiosk on the same bench as the printer wants;
+// the ceiling is there so a typo cannot leave the queue looking frozen.
+constexpr auto kMinPollInterval = std::chrono::milliseconds(1000);
+constexpr auto kMaxPollInterval = std::chrono::milliseconds(60000);
+constexpr auto kDefaultPollInterval = std::chrono::milliseconds(5000);
+
+// How long the event thread waits before dialling back in, matching the kiosk's
+// lipgloss_event_loop. A drop here costs latency, never correctness, so there
+// is nothing to be gained by retrying harder than that.
+constexpr auto kEventRetryInterval = std::chrono::seconds(5);
+
 // lipgloss clamps this to PREVIEW_MAX_SCALE (8) in label_maker.py. 3 is its
 // default and is what the bot asks for.
 constexpr int kPreviewScale = 3;
@@ -176,8 +195,22 @@ public:
     // to a poll interval later.
     void setEndpoint(std::string baseUrl, std::string token);
 
+    // How long the poll thread waits between rounds. Anything that cannot wait
+    // that long arrives on /events instead, so this is a knob for how quickly a
+    // job someone else queued shows up, not for how quickly a fault does.
+    //
+    // Clamped to [kMinPollInterval, kMaxPollInterval]. 
+    void setPollInterval(std::chrono::milliseconds interval);
+
     // Wakes the worker without changing anything. The Refresh button.
     void refresh();
+
+    // Whether GET /events is currently up. Independent of the snapshot: the UI
+    // can be showing a fresh poll over a dead stream, or the reverse. Nothing
+    // stops printing when this is false, the UI is just as current as the poll
+    // interval and no better, which is why it lives on the About page rather
+    // than in the status bar.
+    bool eventsConnected() const;
 
     // Queues a print. Returns immediately; watch actionResult() for the
     // outcome. A second call before the first finishes replaces it, which the
@@ -254,12 +287,30 @@ private:
     void runAction(const PendingAction& action);
     void runPreview(const PrintRequest& request);
 
+    void runEvents();
+
+    // Pulls whole lines off the front of buffer, leaving any partial tail for
+    // the next chunk, and rings the bell for each one that is an event.
+    void consumeEvents(std::string& buffer);
+
+    // Asks the poll thread to go now rather than wait out its interval.
+    void pollNow();
+
     mutable std::mutex mutex_;
     std::condition_variable wake_;
 
     std::string baseUrl_;
     std::string token_;
     Snapshot snapshot_;
+
+    std::chrono::milliseconds pollInterval_ { kDefaultPollInterval };
+
+    // Set by refresh(), by setEndpoint(), and by every event off the stream.
+    // Without it a notify_all() on a thread waiting with a predicate is simply
+    // re-evaluated as false and goes straight back to waiting, which is to say
+    // the wake is dropped so this is what makes any of those three actually
+    // shorten the wait.
+    bool pollNow_ = false;
 
     ActionResult action_;
     std::optional<PendingAction> pendingAction_;
@@ -269,6 +320,15 @@ private:
 
     std::atomic<bool> running_ { false };
     std::thread worker_;
+
+    std::thread eventWorker_;
+    std::atomic<bool> eventsConnected_ { false };
+
+    // Bumped by setEndpoint. The event thread captures it when it dials, and
+    // drops the connection once they differ,                     sa stream opened against the old
+    // host would otherwise stay up forever, since nothing about changing a
+    // setting reaches a socket that is already connected.
+    std::atomic<unsigned long long> endpointGeneration_ { 0 };
 };
 
 }  // namespace lipgloss

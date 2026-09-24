@@ -26,6 +26,7 @@
 
 #include <algorithm>
 #include <cerrno>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -44,6 +45,14 @@ namespace {
 // unnamed taskbar entry beside the launcher.
 constexpr const char* kAppId = "com.easternedgerobotics.sgumi";
 
+// The client's own limits, in the unit the setting is typed in. Derived rather
+// than written out twice, so the box cannot offer a number the client would
+// quietly clamp away.
+constexpr int kMinPollSeconds =
+    static_cast<int>(lipgloss::kMinPollInterval.count() / 1000);
+constexpr int kMaxPollSeconds =
+    static_cast<int>(lipgloss::kMaxPollInterval.count() / 1000);
+
 // Fixed-size buffers because ImGui::InputText writes into a char array. 512 is
 // what the 2027 frontend uses for the same job and is far past any real URL.
 struct Config {
@@ -55,6 +64,9 @@ struct Config {
     // kiosk.example.yaml for what the closet laptop actually points at.
     char clawsUrl[512] = "http://127.0.0.1:8080";
     char clawsToken[512] = "";
+
+    // Seconds between queue polls.
+    int pollSeconds = 5;
 };
 
 Config g_config;
@@ -154,6 +166,7 @@ bool saveConfigToFile(const fs::path& path, const Config& config) {
         {"lipgloss_token", config.lipglossToken},
         {"claws_url", config.clawsUrl},
         {"claws_token", config.clawsToken},
+        {"poll_seconds", config.pollSeconds},
     };
 
     output << data.dump(4) << std::endl;
@@ -188,6 +201,15 @@ bool loadConfigFromFile(const fs::path& path, Config& config) {
                        sizeof(config.clawsUrl));
         copyJsonString(data, "claws_token", config.clawsToken,
                        sizeof(config.clawsToken));
+
+        // Clamped to the same range the client enforces.
+        if (data.contains("poll_seconds") &&
+            data["poll_seconds"].is_number_integer()) {
+            config.pollSeconds = std::clamp(
+                data["poll_seconds"].get<int>(),
+                kMinPollSeconds,
+                kMaxPollSeconds);
+        }
     } catch (const json::exception& e) {
         // Not fatal. A corrupt config costs the saved URL, not the session --
         // the window still opens and the settings can be retyped.
@@ -489,7 +511,13 @@ void drawBuildInfo(SDL_GPUDevice* gpuDevice) {
 }
 
 // lipgloss's own identity and health, from GET /health.
-void drawServiceInfo(const lipgloss::Snapshot& snapshot) {
+//
+// The event stream is reported here rather than in the status bar for the same
+// reason claws is: it not being up doesn't stop anything printing. It costs
+// latency -- the queue is then only as current as the poll interval -- and that
+// is a thing to be able to look up, not a thing to interrupt anyone about.
+void drawServiceInfo(const lipgloss::Snapshot& snapshot, bool eventsConnected,
+                     int pollSeconds) {
     if (!snapshot.reachable) {
         ImGui::TextDisabled("Not connected.");
         return;
@@ -503,6 +531,12 @@ void drawServiceInfo(const lipgloss::Snapshot& snapshot) {
     infoRow("Model", snapshot.model.c_str());
     infoRow("Printer port", snapshot.printerPort.c_str());
     infoRow("Uptime", formatUptime(snapshot.uptimeMs).c_str());
+
+    const std::string events = eventsConnected
+        ? "Live"
+        : "Not connected, polling every " + std::to_string(pollSeconds) + "s";
+
+    infoRow("Events", events.c_str());
 
     ImGui::EndTable();
 }
@@ -1615,6 +1649,7 @@ int runSgumi() {
 
     lipgloss::Client client;
     client.setEndpoint(g_config.lipglossUrl, g_config.lipglossToken);
+    client.setPollInterval(std::chrono::seconds(g_config.pollSeconds));
     client.start();
 
     claws::Client clawsClient;
@@ -1731,6 +1766,15 @@ int runSgumi() {
                 // each. Apply pushes both endpoints, because the config file
                 // holds both and saving half of it would be a strange thing
                 // for a button labelled "save" to do.
+                auto applyConfig = [&] {
+                    client.setEndpoint(g_config.lipglossUrl,
+                                       g_config.lipglossToken);
+                    clawsClient.setEndpoint(g_config.clawsUrl,
+                                            g_config.clawsToken);
+                    client.setPollInterval(
+                        std::chrono::seconds(g_config.pollSeconds));
+                };
+
                 auto drawApplyRow = [&] {
                     ImGui::Spacing();
 
@@ -1738,10 +1782,7 @@ int runSgumi() {
                         // Applied to the live clients either way: a token that
                         // works is worth having for this session even if the
                         // disk write failed.
-                        client.setEndpoint(g_config.lipglossUrl,
-                                           g_config.lipglossToken);
-                        clawsClient.setEndpoint(g_config.clawsUrl,
-                                                g_config.clawsToken);
+                        applyConfig();
 
                         configStatus = saveConfigToFile(configPath, g_config)
                                         ? "Saved to " + configPath.string()
@@ -1751,10 +1792,7 @@ int runSgumi() {
                     ImGui::SameLine();
 
                     if (ImGui::Button("Apply without saving")) {
-                        client.setEndpoint(g_config.lipglossUrl,
-                                           g_config.lipglossToken);
-                        clawsClient.setEndpoint(g_config.clawsUrl,
-                                                g_config.clawsToken);
+                        applyConfig();
                         configStatus = "Applied for this session only.";
                     }
 
@@ -1776,6 +1814,23 @@ int runSgumi() {
                         ImGui::InputText("Token", g_config.lipglossToken,
                                         sizeof(g_config.lipglossToken),
                                         ImGuiInputTextFlags_Password);
+
+                        ImGui::Spacing();
+
+                        if (ImGui::InputInt("Queue poll (seconds)",
+                                            &g_config.pollSeconds)) {
+                            // Clamped as it is typed
+                            g_config.pollSeconds = std::clamp(
+                                g_config.pollSeconds,
+                                kMinPollSeconds,
+                                kMaxPollSeconds);
+                        }
+
+                        if (ImGui::IsItemHovered()) {
+                            ImGui::SetTooltip(
+                                "How often the queue is re-read.",
+                                kMinPollSeconds);
+                        }
 
                         drawApplyRow();
 
@@ -1803,15 +1858,12 @@ int runSgumi() {
                         ImGui::TextUnformatted("Super Graphic Ultra Modern Interface");
                         ImGui::TextDisabled("illusion's frontend for lipgloss");
 
-                        // Two versions, and they are not the same thing: this
-                        // build, and whatever the service on the other end
-                        // happens to be running. Kept apart so a mismatch
-                        // between them is visible rather than confusing.
                         ImGui::SeparatorText("This build");
                         drawBuildInfo(gpuDevice);
 
                         ImGui::SeparatorText("lipgloss");
-                        drawServiceInfo(snapshot);
+                        drawServiceInfo(snapshot, client.eventsConnected(),
+                                        g_config.pollSeconds);
 
                         ImGui::SeparatorText("claws");
                         drawClawsInfo(clawsClient.snapshot());

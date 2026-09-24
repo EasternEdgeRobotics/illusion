@@ -28,55 +28,25 @@ Unlike the Python services, SGUMI doesn't read a `.yaml` for it's config, and be
 
 `SGUMI_CONFIG_PATH` overrides all three, which is how you run two instances against two different lipgloss hosts.
 
-Four settings, all editable under **SGUMI → Settings**:
+Five settings, all editable under **SGUMI → Settings**:
 
 ```json
 {
     "lipgloss_url": "http://127.0.0.1:8081",
     "lipgloss_token": "",
     "claws_url": "http://127.0.0.1:8080",
-    "claws_token": ""
+    "claws_token": "",
+    "poll_seconds": 5
 }
 ```
 
 The tokens are separate secrets: `lipgloss_token` must match `lipgloss.yaml` on the printer host, `claws_token` must match `claws.yaml` on the inventory host.
 
+`poll_seconds` is how often the queue is re-read, clamped to 1–60. It's a setting because where SGUMI runs decides what's reasonable: on the kiosk lipgloss is the same machine and a poll costs nothing, so 1 is fine there, while the default is plenty over the tailnet. It only governs how soon a job *someone else* queued turns up — see below.
+
 Without claws every style still prints, you just type the text yourself.
 
 The settings window opens automatically on first launch, when no lipgloss token is set.
-
-## Printing
-Seven styles, the same menu the bot's `/print` command offers. The boxes a style doesn't use are greyed out.
-
-| Style                  | Needs       | Line 2   |
-|------------------------|-------------|----------|
-| Barcode                | sku         | —        |
-| Label w/ Barcode       | sku, line 1 | —        |
-| Label w/ QR Code       | sku, line 1 | optional |
-| Label                  | line 1      | optional |
-| Cable Label            | line 1      | optional |
-| Cable Label w/ SKU     | sku, line 1 | optional |
-| Cable Label w/ QR Code | sku, line 1 | —        |
-
-**From claws** is on by default and fills line 1 with the item's name. It fires on Enter or when you click away, so scanning a SKU fills the name without touching the mouse. A short SKU is padded like [`clean_sku`](../packages/illusion-core/src/illusion_core/helpers.py) pads it, so `421` finds `EER-000421`.
-
-The SKU box follows that toggle rather than the style, so you can look an item up for a style that puts no SKU on the label. Only styles that use one actually send it.
-
-Jobs from here show a source of `sgumi` in the queue.
-
-### Preview
-The label at the top is rendered by lipgloss, so it is exactly what will print. It refreshes on its own whenever you leave a field, change the style, or a claws lookup fills line 1 — once per field, not per keystroke. There is no refresh button; if lipgloss was unreachable when something changed, the preview says so and updates on the next edit.
-
-Before anything has been previewed it shows an example label, which is also a real render rather than a drawing. If lipgloss isn't up yet you get a blank label outline instead.
-
-### Range print
-Toggling **Range print** swaps the form for a start and end SKU, printing one label per SKU across the span. Both boxes take either `EER-000421` or `421`. It's for labelling a batch of items you've just added, without visiting each SKU one at a time.
-
-Any style that puts the SKU on the label can be used; the ones that don't are left out of the picker, since a range of them would come out identical. For a style with a text line, each label's text is that item's name from claws — so the labels differ by more than their barcode.
-
-SGUMI does that resolution and sends a name per SKU. lipgloss never asks claws anything itself, which is deliberate: its only dependency is the printer in front of it. A SKU claws has never heard of falls back to printing its own SKU, so one missing item doesn't fail a run of two hundred. A coverage line under the fields says how much of the range was named before you print.
-
-lipgloss refuses the job if the roll can't fit the whole run.
 
 ## Reading the status line
 `/health` is unauthenticated and `/queue` is not, which is deliberate over in lipgloss and is what lets the indicator tell three failures apart:
@@ -115,8 +85,7 @@ The four vendored checkouts under `third_party/` are pinned to the same commits 
 ## What's next
 In rough order:
 
-1. **SSE.** `GET /events` replaces the one-second poll.
-2. **Printing an image.** `POST /print/image`, the one print endpoint SGUMI doesn't reach yet.
-3. **Range styles in the bot.** The wire now carries `style` and per-SKU text, so the bot could offer what SGUMI does.
+1. **Printing an image.** `POST /print/image`, the one print endpoint SGUMI doesn't reach yet.
+2. **Range styles in the bot.** The wire now carries `style` and per-SKU text, so the bot could offer what SGUMI does.
 
 [`clients.py`](../packages/illusion-core/src/illusion_core/clients.py) is the reference for every endpoint.

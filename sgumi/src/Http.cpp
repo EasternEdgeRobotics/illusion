@@ -115,6 +115,126 @@ Response del(const std::string& url, const std::string& token) {
     return perform(url, token, nullptr, "DELETE");
 }
 
+namespace {
+
+// What the three C callbacks below are handed through their userdata pointer.
+struct StreamContext {
+    CURL* curl = nullptr;
+    const std::function<void(long)>* onOpen = nullptr;
+    const std::function<void(const char*, size_t)>* onChunk = nullptr;
+    const std::function<bool()>* keepGoing = nullptr;
+    bool opened = false;
+};
+
+// Called once per header line, and once more with the blank line that ends
+// them. That blank line is the only reliable "the response has started" signal
+// libcurl offers from inside a transfer that will not finish.
+size_t onHeader(char* data, size_t size, size_t count, void* userp) {
+    auto* context = static_cast<StreamContext*>(userp);
+    const size_t total = size * count;
+
+    const std::string line(data, total);
+    const bool blank = line == "\r\n" || line == "\n";
+
+    if (blank && !context->opened) {
+        long status = 0;
+        curl_easy_getinfo(context->curl, CURLINFO_RESPONSE_CODE, &status);
+
+        context->opened = true;
+        (*context->onOpen)(status);
+    }
+
+    return total;
+}
+
+size_t onBody(char* data, size_t size, size_t count, void* userp) {
+    auto* context = static_cast<StreamContext*>(userp);
+    const size_t total = size * count;
+
+    // Returning anything but the full length aborts the transfer, which is the
+    // documented way to stop one from inside the write callback.
+    if (!(*context->keepGoing)()) {
+        return 0;
+    }
+
+    (*context->onChunk)(data, total);
+    return total;
+}
+
+int onProgress(void* userp, curl_off_t, curl_off_t, curl_off_t, curl_off_t) {
+    auto* context = static_cast<StreamContext*>(userp);
+    return (*context->keepGoing)() ? 0 : 1;
+}
+
+}  // namespace
+
+Response stream(
+    const std::string& url,
+    const std::string& token,
+    const std::function<void(long)>& onOpen,
+    const std::function<void(const char*, size_t)>& onChunk,
+    const std::function<bool()>& keepGoing)
+{
+    Response response;
+
+    CURL* curl = curl_easy_init();
+
+    if (!curl) {
+        response.error = "curl_easy_init failed";
+        return response;
+    }
+
+    curl_slist* headers = nullptr;
+
+    if (!token.empty()) {
+        const std::string authorization = "Authorization: Bearer " + token;
+        headers = curl_slist_append(headers, authorization.c_str());
+    }
+
+    headers = curl_slist_append(headers, "Accept: text/event-stream");
+
+    StreamContext context;
+    context.curl = curl;
+    context.onOpen = &onOpen;
+    context.onChunk = &onChunk;
+    context.keepGoing = &keepGoing;
+
+    curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+    curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, onHeader);
+    curl_easy_setopt(curl, CURLOPT_HEADERDATA, &context);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, onBody);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &context);
+
+    // Deliberately no CURLOPT_TIMEOUT -- see the header. The connect phase
+    // still gets one, so a host that is not there fails as fast as a poll does.
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, kTimeoutSeconds);
+    curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
+    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+
+    curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
+    curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, onProgress);
+    curl_easy_setopt(curl, CURLOPT_XFERINFODATA, &context);
+
+    const CURLcode result = curl_easy_perform(curl);
+
+    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &response.status);
+
+    // Both abort codes are this side stopping a stream that was working, so
+    // they are not transport failures -- the caller asked for them.
+    if (result == CURLE_OK ||
+        result == CURLE_ABORTED_BY_CALLBACK ||
+        result == CURLE_WRITE_ERROR) {
+        response.transportOk = true;
+    } else {
+        response.error = curl_easy_strerror(result);
+    }
+
+    curl_slist_free_all(headers);
+    curl_easy_cleanup(curl);
+    return response;
+}
+
 std::string join(const std::string& baseUrl, const char* path) {
     std::string base = baseUrl;
 
