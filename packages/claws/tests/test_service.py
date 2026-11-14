@@ -97,9 +97,25 @@ class TestRules:
 
     def test_stock_cannot_go_negative(self, client, add):
         sku = add(TRACKING_MODE="QUANTITY", QUANTITY_ON_HAND=5)
+        refusal = f"{sku} cannot have QUANTITY_ON_HAND below 0."
 
-        assert client.put(f"/items/{sku}/stock", json={"quantity": -5}).json()["rejected"] == "Stock cannot be set below 0."
+        assert client.put(f"/items/{sku}/stock", json={"quantity": -5}).json()["rejected"] == refusal
+        assert client.patch(f"/items/{sku}", json={"updates": {"QUANTITY_ON_HAND": "-1"}}).json()["rejected"] == refusal
+        assert "below 0" in client.post("/items", json={"item": {
+            "NAME": "A", "TRACKING_MODE": "HYBRID", "QUANTITY_ON_HAND": -0.5,
+        }}).json()["rejected"]
+
+        assert client.get(f"/items/{sku}").json()["QUANTITY_ON_HAND"] == 5
         assert client.put(f"/items/{sku}/stock", json={"quantity": 0}).json()["item"]["QUANTITY_ON_HAND"] == 0
+
+    @pytest.mark.parametrize("amount", [0, -1])
+    def test_decrease_amount_must_be_positive(self, client, add, amount):
+        sku = add(TRACKING_MODE="QUANTITY", QUANTITY_ON_HAND=5)
+
+        body = client.patch(f"/items/{sku}", json={"updates": {"DECREASE_AMOUNT": amount}}).json()
+
+        assert body["rejected"] == f"{sku} needs a DECREASE_AMOUNT greater than 0."
+        assert client.post(f"/items/{sku}/decrease", json={}).json()["new_quantity"] == 4
 
     def test_increase_without_an_amount_adds_one(self, client, add):
         sku = add(TRACKING_MODE="QUANTITY", QUANTITY_ON_HAND=5)

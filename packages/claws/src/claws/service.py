@@ -108,15 +108,22 @@ TRACKING_MODES = ("KANBAN", "QUANTITY", "HYBRID")
 FRACTION_HINT = "HYBRID tracking is the one that takes fractions."
 
 
-def _is_fractional(value):
-    try:
-        number = float(value)
-    except (TypeError, ValueError):
-        # Not a number at all, which the database layer rejects with a better
-        # message than anything this could produce
-        return False
+def _number(value):
+    """The value as a float, or None when it is missing or not a number.
 
-    return number != int(number)
+    Not a number at all is left to the database layer, which rejects it with a
+    better message than anything here could produce.
+    """
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _is_fractional(value):
+    number = _number(value)
+
+    return number is not None and number != int(number)
 
 
 def amount_problem(item, amount):
@@ -182,7 +189,8 @@ def fields_problem(tracking_mode, values, sku=None):
     # The database raises on any other mode, which reaches the caller as a 500
     if tracking_mode not in TRACKING_MODES:
         return f"TRACKING_MODE has to be one of {', '.join(TRACKING_MODES)}, not {tracking_mode}."
-    present =[field for field in WHOLE_NUMBER_FIELDS if values.get(field) is not None]
+
+    present = [field for field in WHOLE_NUMBER_FIELDS if values.get(field) is not None]
 
     if tracking_mode == "KANBAN":
         if not present:
@@ -192,6 +200,17 @@ def fields_problem(tracking_mode, values, sku=None):
             f"{subject} is KANBAN tracked, so it has no stock count. "
             f"Leave {' and '.join(present)} unset, or track it as QUANTITY or HYBRID."
         )
+
+    # A stored DECREASE_AMOUNT of 0 is read back as 1, and a negative one makes
+    # every bare `decrease` fail, so both are refused here where they are written
+    on_hand = _number(values.get("QUANTITY_ON_HAND"))
+    decrease = _number(values.get("DECREASE_AMOUNT"))
+
+    if on_hand is not None and on_hand < 0:
+        return f"{subject} cannot have QUANTITY_ON_HAND below 0."
+
+    if decrease is not None and decrease <= 0:
+        return f"{subject} needs a DECREASE_AMOUNT greater than 0."
 
     if tracking_mode != "QUANTITY":
         return None
@@ -494,10 +513,6 @@ def create_app(config_path="./claws.yaml"):
     @app.put("/items/{sku}/stock", dependencies=auth)
     async def set_stock(sku: str, request: Quantity):
         old = _item_or_404(sku)
-
-        if request.quantity < 0:
-            return {"rejected": "Stock cannot be set below 0."}
-
         problem = no_count_problem(old, "set") or fields_problem(
             old["TRACKING_MODE"], {"QUANTITY_ON_HAND": request.quantity}, sku
         )
