@@ -63,21 +63,35 @@ class TestRules:
 
         assert "whole number" in body["rejected"]
 
-    @pytest.mark.xfail(strict=True, reason="fields_problem compares the mode before the database uppercases it")
-    def test_lowercase_mode_is_still_checked(self, client):
+    def test_lowercase_mode_is_still_checked(self, client, add):
         body = client.post("/items", json={"item": {
             "NAME": "A", "TRACKING_MODE": "quantity", "QUANTITY_ON_HAND": 2.5,
         }}).json()
+        assert "whole number" in body["rejected"]
 
-        assert "rejected" in body
+        body = client.post("/items", json={"item": {
+            "NAME": "A", "TRACKING_MODE": " kanban", "QUANTITY_ON_HAND": 2,
+        }}).json()
+        assert "KANBAN" in body["rejected"]
 
-    @pytest.mark.xfail(strict=True, reason="`request.amount or 1` turns an amount of 0 into 1")
-    def test_increase_by_zero_changes_nothing(self, client, add):
+        sku = add(TRACKING_MODE="HYBRID", QUANTITY_ON_HAND=2.5)
+        body = client.patch(f"/items/{sku}", json={"updates": {"TRACKING_MODE": "quantity"}}).json()
+        assert "item" in body
+
+    @pytest.mark.parametrize("path", ["increase", "decrease"])
+    @pytest.mark.parametrize("amount", [0, -2])
+    def test_amount_must_be_positive(self, client, add, path, amount):
         sku = add(TRACKING_MODE="QUANTITY", QUANTITY_ON_HAND=5)
 
-        client.post(f"/items/{sku}/increase", json={"amount": 0})
+        body = client.post(f"/items/{sku}/{path}", json={"amount": amount}).json()
 
+        assert body["rejected"] == "The amount has to be greater than 0."
         assert client.get(f"/items/{sku}").json()["QUANTITY_ON_HAND"] == 5
+
+    def test_increase_without_an_amount_adds_one(self, client, add):
+        sku = add(TRACKING_MODE="QUANTITY", QUANTITY_ON_HAND=5)
+
+        assert client.post(f"/items/{sku}/increase", json={}).json()["item"]["QUANTITY_ON_HAND"] == 6
 
 
 class TestTransitions:

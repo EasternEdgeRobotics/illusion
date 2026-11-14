@@ -1,7 +1,5 @@
 """The bot's Discord rendering, mostly the limits Discord rejects a message over."""
 
-import pytest
-
 from illusion_bot import presentation
 
 
@@ -39,12 +37,20 @@ def test_lists_are_paged():
     assert last.footer.text == "Page 3 of 3"
 
 
-@pytest.mark.xfail(strict=True, reason="make_embed pages at 10 and queue_embed never turns the page")
 def test_long_queue_is_cut_and_says_so():
     embed = presentation.queue_embed(queue_status(30))
 
     assert len(embed.fields) == presentation.MAX_EMBED_JOBS
     assert "10 more behind them" in embed.description
+    # One page with no buttons, so no footer promising more
+    assert embed.footer.text is None
+
+
+def test_queue_between_one_page_and_the_cut_is_shown_whole():
+    embed = presentation.queue_embed(queue_status(15))
+
+    assert len(embed.fields) == 15
+    assert embed.footer.text is None
 
 
 def test_paused_queue_is_red():

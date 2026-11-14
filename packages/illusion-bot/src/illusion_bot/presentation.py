@@ -113,11 +113,11 @@ def total_pages(rows, page_size=PAGE_SIZE):
     return -(-len(rows) // page_size)
 
 
-def make_embed(data, exclude=None, field_names=None, title=None, description=None, colour=None, row_name=None, vertical=None, page=0):
+def make_embed(data, exclude=None, field_names=None, title=None, description=None, colour=None, row_name=None, vertical=None, page=0, page_size=PAGE_SIZE):
     # vertical=None lays a single row out one field per column and anything longer
     # as a field per row, pass True or False to force one or the other
     # row_name names each of those fields after that column, instead of "Result 1"
-    # page picks which PAGE_SIZE-sized slice of a multi-row list embed to render
+    # page picks which page_size slice of a multi-row list embed to render
     missing = "N/A"
     inline = False
 
@@ -199,9 +199,9 @@ def make_embed(data, exclude=None, field_names=None, title=None, description=Non
         embed.description = embed.description or "No displayable fields."
         return embed
 
-    pages = total_pages(rows)
-    start = page * PAGE_SIZE
-    window = rows[start:start + PAGE_SIZE]
+    pages = total_pages(rows, page_size)
+    start = page * page_size
+    window = rows[start:start + page_size]
 
     for index, row in enumerate(window, start=start + 1):
         lines = []
@@ -371,7 +371,8 @@ def queue_embed(status):
     if not rows:
         return notice_embed(status["title"], description, urgent=paused)
 
-    # Job id and state are already in each field name
+    # Job id and state are already in each field name. One page holding every
+    # job kept, since this embed has no pager to turn to the next one.
     return make_embed(
         rows,
         exclude=["JOB_ID", "STATE"],
@@ -381,4 +382,5 @@ def queue_embed(status):
         colour=ALERT_COLOUR if paused else EMBED_COLOUR,
         row_name="HEADER",
         vertical=False,
+        page_size=MAX_EMBED_JOBS,
     )

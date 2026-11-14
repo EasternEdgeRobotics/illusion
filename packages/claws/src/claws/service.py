@@ -128,7 +128,15 @@ def amount_problem(item, amount):
 
     Returns the reason as a string, or None if the amount is fine.
     """
-    if amount is None or item["TRACKING_MODE"] != "QUANTITY":
+    if amount is None:
+        return None
+
+    # Checked here rather than left to the database layer, which raises on it
+    # and reaches the caller as a 500
+    if amount <= 0:
+        return "The amount has to be greater than 0."
+
+    if item["TRACKING_MODE"] != "QUANTITY":
         return None
 
     if _is_fractional(amount):
@@ -164,8 +172,11 @@ def fields_problem(tracking_mode, values, sku=None):
     DECREASE_AMOUNT stored on the item is what a bare `decrease` uses, and
     writing QUANTITY_ON_HAND directly sidesteps set_stock entirely.
     """
+    # The database uppercases the mode on write, so a lowercase one has to be
+    # checked as what it is about to become
+    tracking_mode = str(tracking_mode).strip().upper()
     subject = sku or "This item"
-    present = [field for field in WHOLE_NUMBER_FIELDS if values.get(field) is not None]
+    present =[field for field in WHOLE_NUMBER_FIELDS if values.get(field) is not None]
 
     if tracking_mode == "KANBAN":
         if not present:
@@ -467,7 +478,9 @@ def create_app(config_path="./claws.yaml"):
 
         was_low = bool(old["LOW"])
 
-        item = inventory.increase_item(sku, float(request.amount or 1))
+        # Not `request.amount or 1`, which turns an amount of 0 into 1
+        amount = 1 if request.amount is None else request.amount
+        item = inventory.increase_item(sku, amount)
         inventory.save()
 
         return {"item": item, "transition": _announce(item, was_low)}
