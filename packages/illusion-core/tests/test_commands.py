@@ -82,6 +82,15 @@ class TestStock:
         assert await commands.handler_increase(sku, "0") == "The amount has to be greater than 0."
         assert (await claws.get_item(sku))["QUANTITY_ON_HAND"] == 5
 
+    @pytest.mark.parametrize("typed", ["abc", "", "nan", "inf"])
+    async def test_amounts_that_are_not_numbers(self, commands, claws, typed):
+        sku = await add(commands, tracking_mode="QUANTITY", quantity_on_hand=5)
+
+        assert await commands.handler_increase(sku, typed) == f"Amount has to be a number, not {typed}"
+        assert await commands.handler_decrease(sku, typed) == f"Amount has to be a number, not {typed}"
+        assert await commands.handler_set_stock(sku, typed) == f"Quantity has to be a number, not {typed}"
+        assert (await claws.get_item(sku))["QUANTITY_ON_HAND"] == 5
+
     async def test_increase_and_set_stock(self, commands):
         sku = await add(commands, tracking_mode="QUANTITY", quantity_on_hand=0, low_threshold=1)
         await commands.handler_set_stock(sku, "0")

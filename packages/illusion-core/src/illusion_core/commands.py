@@ -9,6 +9,7 @@ would drag discord back into a package that claws and lipgloss depend on.
 """
 
 import functools
+import math
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
@@ -37,6 +38,20 @@ class DuplicateScan:
     barcode: str
     message: str
     info: object
+
+
+def parse_amount(value):
+    """The value as a float, or None when it is not a finite number.
+
+    Amounts arrive as typed text from both frontends. "nan" and "inf" parse as
+    floats but cannot be sent as JSON, so they are refused here too.
+    """
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+
+    return number if math.isfinite(number) else None
 
 
 def reports_service_errors(handler):
@@ -191,10 +206,18 @@ class DB_Commands:
     async def handler_decrease(self, sku, amount=None):
         sku = illusion_helpers.clean_sku(sku)
 
-        if amount != None and float(amount) <= 0:
-            return f"Quantity must be greater than 0"
+        number = None
 
-        result = await self.claws.decrease(sku, float(amount) if amount != None else None)
+        if amount is not None:
+            number = parse_amount(amount)
+
+            if number is None:
+                return f"Amount has to be a number, not {amount}"
+
+            if number <= 0:
+                return f"Quantity must be greater than 0"
+
+        result = await self.claws.decrease(sku, number)
 
         if result is None:
             return f"Invalid sku: {sku}"
@@ -233,7 +256,12 @@ class DB_Commands:
     async def handler_increase(self, sku, amount=1):
         sku = illusion_helpers.clean_sku(sku)
 
-        result = await self.claws.increase(sku, float(amount))
+        number = parse_amount(amount)
+
+        if number is None:
+            return f"Amount has to be a number, not {amount}"
+
+        result = await self.claws.increase(sku, number)
 
         if result is None:
             return f"Invalid sku: {sku}"
@@ -262,7 +290,12 @@ class DB_Commands:
     async def handler_set_stock(self, sku, quantity):
         sku = illusion_helpers.clean_sku(sku)
 
-        result = await self.claws.set_stock(sku, float(quantity))
+        number = parse_amount(quantity)
+
+        if number is None:
+            return f"Quantity has to be a number, not {quantity}"
+
+        result = await self.claws.set_stock(sku, number)
 
         if result is None:
             return f"Invalid sku: {sku}"

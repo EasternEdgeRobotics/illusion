@@ -88,6 +88,19 @@ class TestRules:
         assert body["rejected"] == "The amount has to be greater than 0."
         assert client.get(f"/items/{sku}").json()["QUANTITY_ON_HAND"] == 5
 
+    def test_unknown_tracking_mode_is_refused(self, client, add):
+        body = client.post("/items", json={"item": {"NAME": "A", "TRACKING_MODE": "bogus"}}).json()
+        assert body["rejected"] == "TRACKING_MODE has to be one of KANBAN, QUANTITY, HYBRID, not BOGUS."
+
+        sku = add()
+        assert "rejected" in client.patch(f"/items/{sku}", json={"updates": {"TRACKING_MODE": "weight"}}).json()
+
+    def test_stock_cannot_go_negative(self, client, add):
+        sku = add(TRACKING_MODE="QUANTITY", QUANTITY_ON_HAND=5)
+
+        assert client.put(f"/items/{sku}/stock", json={"quantity": -5}).json()["rejected"] == "Stock cannot be set below 0."
+        assert client.put(f"/items/{sku}/stock", json={"quantity": 0}).json()["item"]["QUANTITY_ON_HAND"] == 0
+
     def test_increase_without_an_amount_adds_one(self, client, add):
         sku = add(TRACKING_MODE="QUANTITY", QUANTITY_ON_HAND=5)
 

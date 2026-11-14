@@ -103,6 +103,8 @@ class Registration(BaseModel):
 # ORDER_QUANTITY describes a purchase rather than stock on hand.
 WHOLE_NUMBER_FIELDS = ("QUANTITY_ON_HAND", "DECREASE_AMOUNT")
 
+TRACKING_MODES = ("KANBAN", "QUANTITY", "HYBRID")
+
 FRACTION_HINT = "HYBRID tracking is the one that takes fractions."
 
 
@@ -176,6 +178,10 @@ def fields_problem(tracking_mode, values, sku=None):
     # checked as what it is about to become
     tracking_mode = str(tracking_mode).strip().upper()
     subject = sku or "This item"
+
+    # The database raises on any other mode, which reaches the caller as a 500
+    if tracking_mode not in TRACKING_MODES:
+        return f"TRACKING_MODE has to be one of {', '.join(TRACKING_MODES)}, not {tracking_mode}."
     present =[field for field in WHOLE_NUMBER_FIELDS if values.get(field) is not None]
 
     if tracking_mode == "KANBAN":
@@ -488,6 +494,10 @@ def create_app(config_path="./claws.yaml"):
     @app.put("/items/{sku}/stock", dependencies=auth)
     async def set_stock(sku: str, request: Quantity):
         old = _item_or_404(sku)
+
+        if request.quantity < 0:
+            return {"rejected": "Stock cannot be set below 0."}
+
         problem = no_count_problem(old, "set") or fields_problem(
             old["TRACKING_MODE"], {"QUANTITY_ON_HAND": request.quantity}, sku
         )
