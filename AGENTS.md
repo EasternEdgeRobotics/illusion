@@ -39,7 +39,15 @@ cmake -S sgumi -B sgumi/build
 cmake --build sgumi/build -j
 ```
 
-There is no test suite. A change is checked by running the services it touches, and for SGUMI by building and running it. Say what was run and what was not. A change to anything that talks to the Niimbot or the scanner cannot be fully checked without the hardware, so say that too.
+## Tests
+```sh
+uv run pytest
+```
+Each package keeps its tests in its own `tests/`. They use a temporary database and fake the Niimbot at the functions in `lipgloss/printer.py` that open the serial port, so they need no config, hardware or network. The illusion-core command tests run `DB_Commands` through the real `ClawsClient` into an in-process claws app, so a change to an endpoint shows up there.
+
+A known bug is pinned as a test marked `xfail(strict=True)` with the reason. Fixing the bug makes that test pass, which fails the run until the marker is removed.
+
+The tests do not replace running the services. Run what a change touches, and for SGUMI build and run it, then say what was run and what was not. The fake printer cannot show what the real Niimbot or the scanner does, so a change to either still needs the hardware, and say so when it was not checked.
 
 ## Services
 The boundaries between the packages are the design. Keep them.
@@ -66,7 +74,7 @@ That does not mean doing everything the simplest possible way. A crude solution 
 - If a design needs a long explanation before the code makes sense, treat that as a sign it is too much.
 
 ## Code
-Python 3.14, managed with uv. 4 space indent, `snake_case` functions and modules, `PascalCase` classes, a docstring on each module saying what it is for. New dependencies go in the `pyproject.toml` of the one package that needs them, never the workspace root.
+Python 3.14, managed with uv. 4 space indent, `snake_case` functions and modules, `PascalCase` classes, a docstring on each module saying what it is for. New dependencies go in the `pyproject.toml` of the one package that needs them, never the workspace root. The exception is test tooling such as pytest, which belongs to no package and sits in the root `dev` group.
 
 SGUMI is C++20 with `#pragma once` and 4 space indent. `PascalCase` types and files, `camelCase` functions, `kConstant` constants. CMake uses 2 spaces and `SGUMI_` prefixed options. Warnings (`-Wall -Wextra -Wpedantic`) apply to SGUMI's own target, and the build is kept free of them.
 

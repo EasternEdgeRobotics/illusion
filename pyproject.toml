@@ -16,4 +16,16 @@ dev = [
     "claws",
     "lipgloss",
     "illusion-core",
+    "pytest>=9.2.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["packages"]
+# Each package has its own tests/ with clashing file names, which the default
+# import mode cannot tell apart
+addopts = ["--import-mode=importlib"]
+# Raised inside anyio and starlette themselves, nothing here can act on them
+filterwarnings = [
+    "ignore:_pytest.python.CallSpec2:DeprecationWarning",
+    "ignore:Using `httpx` with `starlette.testclient`",
 ]

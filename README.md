@@ -30,6 +30,8 @@ uv sync
 uv run claws & uv run lipgloss & uv run illusion-bot & uv run illusion-kiosk
 ```
 
+Run the tests with `uv run pytest`. They need no config files, printer or network.
+
 ## Label Printing
 Currently, only the Niimbot D110 is supported over USB, but other models could work with minor changes.
 
