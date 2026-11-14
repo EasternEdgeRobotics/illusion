@@ -236,4 +236,11 @@ lipgloss.example.yaml.local
 claws.yaml
 kiosk.yaml
 bot.yaml
-.vscode/settings.json
+
+# Editor and AI stuff
+.claude/settings.local.json
+.vscode/
+*.vcxproj.user
+.vs/
+.idea/
+xcuserdata/
