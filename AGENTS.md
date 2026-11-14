@@ -43,7 +43,7 @@ cmake --build sgumi/build -j
 ```sh
 uv run pytest
 ```
-Each package keeps its tests in its own `tests/`. They use a temporary database and fake the Niimbot at the functions in `lipgloss/printer.py` that open the serial port, so they need no config, hardware or network. The illusion-core command tests run `DB_Commands` through the real `ClawsClient` into an in-process claws app, so a change to an endpoint shows up there.
+Each package keeps its tests in its own `tests/`. They use a temporary database and a fake Niimbot, so they need no config, hardware or network. The queue and service tests fake the printer at the functions in `lipgloss/printer.py` that open the serial port. `test_printer.py` fakes it one level lower, at niimprint's serial transport, so niimprint's own parsing and the error messages Lipgloss matches on are real. The illusion-core command tests run `DB_Commands` through the real `ClawsClient` into an in-process claws app, so a change to an endpoint shows up there.
 
 A known bug is pinned as a test marked `xfail(strict=True)` with the reason. Fixing the bug makes that test pass, which fails the run until the marker is removed.
 
